@@ -28,7 +28,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-MODEL = "claude-sonnet-4-20250514"
+MODEL = "claude-sonnet-4-5"
 MAX_HISTORY_MESSAGES = 60
 TELEGRAM_MAX_MESSAGE_LENGTH = 4096
 
