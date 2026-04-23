@@ -109,16 +109,25 @@ async def log_habit(
 
 async def log_health(
     date: str,
-    physical: int | None = None,
-    emotional: int | None = None,
-    mental: int | None = None,
+    physical: dict[str, Any] | int | None = None,
+    emotional: dict[str, Any] | int | None = None,
+    mental: dict[str, Any] | int | None = None,
 ) -> Any:
-    payload = {
-        "date": date,
-        "physical": physical,
-        "emotional": emotional,
-        "mental": mental,
-    }
+    payload: dict[str, Any] = {"date": date, "physical": None, "emotional": None, "mental": None}
+
+    def _prune(value: Any) -> Any:
+        if value is None:
+            return None
+        if isinstance(value, dict):
+            return {k: v for k, v in value.items() if v is not None}
+        return value
+
+    if physical is not None:
+        payload["physical"] = _prune(physical)
+    if emotional is not None:
+        payload["emotional"] = _prune(emotional)
+    if mental is not None:
+        payload["mental"] = _prune(mental)
     return await _post("/api/assistant/health/log/", payload)
 
 

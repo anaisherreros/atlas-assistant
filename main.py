@@ -10,8 +10,12 @@ from dotenv import load_dotenv
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from atlas_client import (
+    complete_task,
     create_desire,
     create_goal,
+    create_habit,
+    create_phase,
+    create_task,
     create_transaction,
     get_dashboard,
     get_today,
@@ -47,25 +51,116 @@ MAX_TOOL_LOOPS = 6
 ATLAS_TOOLS: list[dict[str, Any]] = [
     {
         "name": "create_desire",
-        "description": "Crea un deseo en Atlas Vital.",
+        "description": "Crea un nuevo deseo en Atlas Vital",
         "input_schema": {
             "type": "object",
             "properties": {
                 "title": {"type": "string"},
                 "description": {"type": "string"},
-                "area": {"type": "string"},
             },
             "required": ["title"],
         },
     },
     {
-        "name": "log_habit",
-        "description": "Registra el estado de un habito en una fecha concreta.",
+        "name": "create_task",
+        "description": "Crea una tarea en Atlas Vital",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string"},
+                "due_date": {"type": "string", "format": "date"},
+                "priority": {
+                    "type": "string",
+                    "enum": ["high", "medium", "low"],
+                },
+                "description": {"type": "string"},
+            },
+            "required": ["title", "due_date"],
+        },
+    },
+    {
+        "name": "create_habit",
+        "description": "Crea un hábito en Atlas Vital",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string"},
+                "start_date": {"type": "string", "format": "date"},
+                "frequency_type": {
+                    "type": "string",
+                    "enum": ["daily", "weekly", "monthly"],
+                },
+            },
+            "required": ["title", "start_date", "frequency_type"],
+        },
+    },
+    {
+        "name": "log_health",
+        "description": "Registra datos de salud de hoy",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "date": {"type": "string", "format": "date"},
+                "physical": {
+                    "type": "object",
+                    "properties": {
+                        "weight_kg": {"type": "number"},
+                        "sleep_hours": {"type": "number"},
+                        "steps": {"type": "integer"},
+                        "heart_rate": {"type": "integer"},
+                    },
+                },
+                "emotional": {
+                    "type": "object",
+                    "properties": {
+                        "mood": {"type": "integer", "minimum": 1, "maximum": 5},
+                        "energy_level": {"type": "integer", "minimum": 1, "maximum": 10},
+                    },
+                },
+                "mental": {
+                    "type": "object",
+                    "properties": {
+                        "stress_level": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 10,
+                        },
+                        "mental_clarity": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 10,
+                        },
+                    },
+                },
+            },
+            "required": ["date"],
+        },
+    },
+    {
+        "name": "create_transaction",
+        "description": "Registra una transacción financiera",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "description": {"type": "string"},
+                "amount": {"type": "number"},
+                "transaction_type": {
+                    "type": "string",
+                    "enum": ["income", "expense"],
+                },
+                "date": {"type": "string", "format": "date"},
+            },
+            "required": ["description", "amount", "transaction_type", "date"],
+        },
+    },
+    {
+        "name": "log_habit_completion",
+        "description": "Marca un hábito como completado hoy",
         "input_schema": {
             "type": "object",
             "properties": {
                 "habit_id": {"type": "integer"},
-                "date": {"type": "string"},
+                "date": {"type": "string", "format": "date"},
                 "completed": {"type": "boolean"},
                 "note": {"type": "string"},
             },
@@ -73,45 +168,51 @@ ATLAS_TOOLS: list[dict[str, Any]] = [
         },
     },
     {
-        "name": "log_health",
-        "description": "Registra datos de salud fisica, emocional y mental.",
+        "name": "complete_task",
+        "description": "Marca una tarea como completada",
         "input_schema": {
             "type": "object",
             "properties": {
-                "date": {"type": "string"},
-                "physical": {"type": ["integer", "null"]},
-                "emotional": {"type": ["integer", "null"]},
-                "mental": {"type": ["integer", "null"]},
+                "task_id": {"type": "integer"},
             },
-            "required": ["date"],
+            "required": ["task_id"],
         },
     },
     {
-        "name": "create_transaction",
-        "description": "Crea una transaccion financiera en Atlas Vital.",
+        "name": "get_today",
+        "description": "Obtiene tareas y hábitos de hoy",
         "input_schema": {
             "type": "object",
-            "properties": {
-                "description": {"type": "string"},
-                "amount": {"type": "number"},
-                "transaction_type": {"type": "string"},
-                "date": {"type": "string"},
-            },
-            "required": ["description", "amount", "transaction_type", "date"],
+            "properties": {},
+            "required": [],
         },
     },
     {
         "name": "create_goal",
-        "description": "Crea una meta vinculada a una fase.",
+        "description": "Crea un objetivo dentro de una fase",
         "input_schema": {
             "type": "object",
             "properties": {
                 "phase_id": {"type": "integer"},
                 "title": {"type": "string"},
-                "start_date": {"type": "string"},
-                "end_date": {"type": "string"},
+                "start_date": {"type": "string", "format": "date"},
+                "end_date": {"type": "string", "format": "date"},
             },
             "required": ["phase_id", "title", "start_date", "end_date"],
+        },
+    },
+    {
+        "name": "create_phase",
+        "description": "Crea una fase dentro de un deseo",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "desire_id": {"type": "integer"},
+                "title": {"type": "string"},
+                "start_date": {"type": "string", "format": "date"},
+                "end_date": {"type": "string", "format": "date"},
+            },
+            "required": ["desire_id", "title", "start_date", "end_date"],
         },
     },
 ]
@@ -125,16 +226,12 @@ def build_system_prompt(dashboard_data: str) -> str:
         f"{dashboard_data}\n\n"
         "Usa estos datos para dar respuestas personalizadas.\n"
         "Si los datos están vacíos en algún área, simplemente no los menciones.\n\n"
-        "ACCIONES QUE PUEDES REALIZAR EN ATLAS VITAL:\n"
-        "- Crear, editar y borrar cualquier registro en Atlas Vital\n"
-        "- Gestionar deseos, fases, objetivos, tareas y hábitos\n"
-        "- Registrar revisiones diarias, semanales y mensuales\n"
-        "- Gestionar relaciones y autorrelación\n"
-        "- Registrar y actualizar salud, ejercicio y patrimonio\n"
-        "- Añadir y borrar transacciones financieras\n\n"
-        "Cuando el usuario te pida crear, editar o borrar algo,\n"
-        "usa las herramientas disponibles y confirma \n"
-        "lo que has guardado.\n\n"
+        "ACCIONES QUE PUEDES REALIZAR EN ATLAS VITAL (herramientas con tool use):\n"
+        "- create_desire, create_task, create_habit\n"
+        "- log_health, create_transaction, log_habit_completion, complete_task\n"
+        "- get_today, create_goal, create_phase\n\n"
+        "Cuando el usuario te pida crear, registrar, completar o consultar algo en Atlas,\n"
+        "usa la herramienta correcta, ejecuta y confirma con precisión qué se guardó.\n\n"
         "Si la consulta del usuario trata sobre hoy, qué tiene o su día,\n"
         "prioriza usar get_today() en lugar de get_dashboard() completo."
     )
@@ -173,9 +270,21 @@ async def _run_atlas_tool(name: str, tool_input: dict[str, Any]) -> Any:
         return await create_desire(
             title=tool_input["title"],
             description=tool_input.get("description", ""),
-            area=tool_input.get("area", ""),
         )
-    if name == "log_habit":
+    if name == "create_task":
+        return await create_task(
+            title=tool_input["title"],
+            due_date=tool_input["due_date"],
+            description=tool_input.get("description", ""),
+            priority=tool_input.get("priority", "medium"),
+        )
+    if name == "create_habit":
+        return await create_habit(
+            title=tool_input["title"],
+            start_date=tool_input["start_date"],
+            frequency_type=tool_input["frequency_type"],
+        )
+    if name == "log_habit_completion":
         return await log_habit(
             habit_id=tool_input["habit_id"],
             date=tool_input["date"],
@@ -196,9 +305,20 @@ async def _run_atlas_tool(name: str, tool_input: dict[str, Any]) -> Any:
             transaction_type=tool_input["transaction_type"],
             date=tool_input["date"],
         )
+    if name == "complete_task":
+        return await complete_task(task_id=tool_input["task_id"])
+    if name == "get_today":
+        return await get_today()
     if name == "create_goal":
         return await create_goal(
             phase_id=tool_input["phase_id"],
+            title=tool_input["title"],
+            start_date=tool_input["start_date"],
+            end_date=tool_input["end_date"],
+        )
+    if name == "create_phase":
+        return await create_phase(
+            desire_id=tool_input["desire_id"],
             title=tool_input["title"],
             start_date=tool_input["start_date"],
             end_date=tool_input["end_date"],
