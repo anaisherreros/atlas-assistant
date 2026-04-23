@@ -335,6 +335,7 @@ async def generate_with_tools(
     conversation_messages: list[dict[str, Any]] = list(api_messages)
 
     for _ in range(MAX_TOOL_LOOPS):
+        logger.info("Llamando a Claude con %d mensajes", len(conversation_messages))
         response = await client.messages.create(
             model=MODEL,
             max_tokens=8192,
@@ -342,6 +343,8 @@ async def generate_with_tools(
             tools=ATLAS_TOOLS,
             messages=conversation_messages,
         )
+        logger.info("Stop reason: %s", response.stop_reason)
+        logger.info("Bloques en respuesta: %s", [b.type for b in response.content])
         assistant_text_parts: list[str] = []
         assistant_content = _serialize_assistant_content(list(response.content))
         tool_result_blocks: list[dict[str, Any]] = []
@@ -353,8 +356,11 @@ async def generate_with_tools(
             if block.type != "tool_use":
                 continue
 
+            logger.info("Ejecutando tool: %s con input: %s", block.name, block.input)
+
             try:
                 result = await _run_atlas_tool(block.name, block.input)
+                logger.info("Resultado de tool %s: %s", block.name, result)
                 tool_result_blocks.append(
                     {
                         "type": "tool_result",
@@ -363,6 +369,7 @@ async def generate_with_tools(
                     }
                 )
             except Exception as exc:
+                logger.error("Error en tool %s: %s", block.name, exc)
                 logger.exception("Error ejecutando tool de Atlas Vital: %s", block.name)
                 tool_result_blocks.append(
                     {
