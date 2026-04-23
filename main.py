@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import logging
 import os
+import json
 
 from anthropic import AsyncAnthropic
 from dotenv import load_dotenv
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from atlas_client import get_dashboard
 from database import (
     create_engine,
     fetch_conversation_messages,
@@ -33,11 +35,14 @@ MAX_HISTORY_MESSAGES = 60
 TELEGRAM_MAX_MESSAGE_LENGTH = 4096
 
 
-def build_system_prompt() -> str:
-    owner = os.getenv("OWNER_NAME", "tu persona").strip() or "tu persona"
+def build_system_prompt(dashboard_data: str) -> str:
     return (
-        f"Eres el asistente personal de {owner}.\n"
-        "Eres su mano derecha, directo, práctico y cercano."
+        "Eres el asistente personal de Anaïs.\n"
+        "Eres su mano derecha, directa y práctica.\n\n"
+        "CONTEXTO ACTUAL DE SU VIDA (datos reales de Atlas Vital):\n"
+        f"{dashboard_data}\n\n"
+        "Usa estos datos para dar respuestas personalizadas.\n"
+        "Si los datos están vacíos en algún área, simplemente no los menciones."
     )
 
 
@@ -97,12 +102,19 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             limit=MAX_HISTORY_MESSAGES,
         )
         api_messages = messages_to_anthropic(history_rows)
+        dashboard_data = "{}"
+
+        try:
+            dashboard = await get_dashboard()
+            dashboard_data = json.dumps(dashboard, ensure_ascii=False, indent=2)
+        except Exception:
+            logger.exception("Error al consultar Atlas Vital")
 
         try:
             response = await client.messages.create(
                 model=MODEL,
                 max_tokens=8192,
-                system=build_system_prompt(),
+                system=build_system_prompt(dashboard_data),
                 messages=api_messages,
             )
         except Exception:
@@ -134,7 +146,13 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 
 def main() -> None:
-    required = ("TELEGRAM_BOT_TOKEN", "ANTHROPIC_API_KEY", "DATABASE_URL")
+    required = (
+        "TELEGRAM_BOT_TOKEN",
+        "ANTHROPIC_API_KEY",
+        "DATABASE_URL",
+        "ATLAS_VITAL_URL",
+        "ASSISTANT_API_KEY",
+    )
     missing = [name for name in required if not os.getenv(name)]
     if missing:
         raise RuntimeError(
