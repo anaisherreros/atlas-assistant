@@ -16,9 +16,13 @@ def _auth_headers() -> dict[str, str]:
     return {"X-Assistant-Key": assistant_api_key}
 
 
-async def _get(path: str) -> Any:
+async def _get(path: str, params: dict[str, Any] | None = None) -> Any:
     async with httpx.AsyncClient(timeout=15.0) as client:
-        response = await client.get(_build_url(path), headers=_auth_headers())
+        response = await client.get(
+            _build_url(path),
+            headers=_auth_headers(),
+            params=params or {},
+        )
         response.raise_for_status()
         return response.json()
 
@@ -43,6 +47,37 @@ async def get_dashboard() -> Any:
 
 async def get_today() -> Any:
     return await _get("/api/assistant/today/")
+
+
+async def get_desire_structure(desire_id: int) -> Any:
+    return await _get(f"/api/assistant/desires/{desire_id}/structure/")
+
+
+async def get_all_desires_full() -> Any:
+    return await _get("/api/assistant/desires/full/")
+
+
+async def get_calendar(start_date: str, end_date: str) -> Any:
+    return await _get(
+        "/api/assistant/calendar/",
+        params={"start_date": start_date, "end_date": end_date},
+    )
+
+
+async def get_areas_full() -> Any:
+    return await _get("/api/assistant/areas/full/")
+
+
+async def get_relationships_full() -> Any:
+    return await _get("/api/assistant/relationships/full/")
+
+
+async def get_reviews_summary() -> Any:
+    return await _get("/api/assistant/reviews/summary/")
+
+
+async def get_finance_full() -> Any:
+    return await _get("/api/assistant/finance/full/")
 
 
 async def get_tasks_today() -> Any:
