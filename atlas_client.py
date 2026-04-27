@@ -378,3 +378,31 @@ async def create_patrimony_snapshot(date: str, **kwargs: Any) -> Any:
     payload: dict[str, Any] = {"date": date}
     payload.update(kwargs)
     return await _post("/api/assistant/finance/patrimony/snapshot/create/", payload)
+
+
+async def get_desire_structure(desire_id: int) -> Any:
+    return await _get(f"/api/assistant/desires/{desire_id}/")
+
+
+async def get_all_desires_full() -> Any:
+    return await _get("/api/assistant/desires/all/")
+
+
+async def get_calendar(start_date: str, end_date: str) -> Any:
+    return await _get(f"/api/assistant/calendar/?start_date={start_date}&end_date={end_date}")
+
+
+async def get_areas_full() -> Any:
+    return await _get("/api/assistant/areas/")
+
+
+async def get_relationships_full() -> Any:
+    return await _get("/api/assistant/relationships/")
+
+
+async def get_reviews_summary() -> Any:
+    return await _get("/api/assistant/reviews/summary/")
+
+
+async def get_finance_full() -> Any:
+    return await _get("/api/assistant/finance/")
