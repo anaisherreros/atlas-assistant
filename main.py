@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import json
+import re
 from typing import Any
 
 from anthropic import AsyncAnthropic
@@ -332,10 +333,154 @@ def chunk_text(text: str, size: int) -> list[str]:
     return [text[i : i + size] for i in range(0, len(text), size)]
 
 
-def is_today_query(text: str) -> bool:
-    normalized = text.lower()
-    keywords = ("hoy", "qué tengo", "que tengo", "mi día", "mi dia")
-    return any(keyword in normalized for keyword in keywords)
+def classify_context(text: str) -> str:
+    """Precarga de contexto Atlas en el system prompt: none / today / full."""
+    normalized = text.lower().strip()
+    if not normalized:
+        return "none"
+
+    full_markers = (
+        "reflexionar",
+        "reflexión",
+        "reflexiona",
+        "analiza mis",
+        "analizar mis",
+        "análisis de mis",
+        "analisis de mis",
+        "analiza mi vida",
+        "analiza mi situación",
+        "analiza mi situacion",
+        "coaching",
+        "mis metas",
+        "mis objetivos",
+        "planificación",
+        "planeación",
+        "planeacion",
+        "planifica mi",
+        "balance de vida",
+        "panorama general",
+        "todas mis áreas",
+        "mi vida en general",
+        "filosofía",
+        "sentido de mi vida",
+        "patrones en mi",
+        "desarrollo personal",
+        "ayúdame a pensar",
+        "ayudame a pensar",
+        "piensa conmigo sobre",
+        "analiza mis finanzas",
+        "analizar mis finanzas",
+        "revisa mi situación financiera",
+        "revisa mi situacion financiera",
+    )
+    if any(m in normalized for m in full_markers):
+        return "full"
+
+    if re.fullmatch(
+        r"(hola|hey|buenas|buenos días|buenas tardes|buenas noches)(\s*[!.¡…]*)?",
+        normalized,
+    ):
+        return "none"
+    if re.fullmatch(
+        r"(hola|hey)\s*,?\s*(qué|que)\s+tal\s*[!.¡?¿]*",
+        normalized,
+    ):
+        return "none"
+    thanks_only = ("gracias", "muchas gracias", "ok", "vale", "perfecto", "genial")
+    if normalized in thanks_only:
+        return "none"
+
+    conceptual_starts = (
+        "qué es ",
+        "que es ",
+        "qué son ",
+        "que son ",
+        "define ",
+        "define qué ",
+        "define que ",
+    )
+    if any(normalized.startswith(s) for s in conceptual_starts):
+        if " mi " not in normalized and not normalized.startswith("mi "):
+            return "none"
+
+    today_markers = (
+        "qué tengo hoy",
+        "que tengo hoy",
+        "qué tengo para hoy",
+        "que tengo para hoy",
+        "marcar",
+        "completar",
+        "check",
+        "registra",
+        "apunta",
+        "cuánto llevo",
+        "cuanto llevo",
+        "mis hábitos",
+        "mis habitos",
+        "mis tareas",
+        "crea una tarea",
+        "crea tarea",
+        "nueva tarea",
+        "tarea para",
+        "marca el hábito",
+        "marca el habito",
+        "hábito",
+        "habito",
+        "hábitos",
+        "habitos",
+        "para hoy",
+        "mi día",
+        "mi dia",
+        "calendario",
+        "agenda",
+        "entre fechas",
+        "rango de fechas",
+        "estructura del deseo",
+        "estructura de mi deseo",
+        "estructura de un deseo",
+        "todos los deseos",
+        "mis deseos activos",
+        "deseos activos",
+        "listado de deseos",
+        "mis áreas",
+        "areas de vida",
+        "áreas de vida",
+        "subáreas",
+        "subareas",
+        "mis relaciones",
+        "relaciones personales",
+        "historial de relaciones",
+        "resumen de revisiones",
+        "revisiones diaria",
+        "revision semanal",
+        "revisión mensual",
+        "revision mensual",
+        "finanzas completas",
+        "presupuesto anual",
+        "gastos del mes",
+        "gastos reales",
+        "crea un deseo",
+        "crea deseo",
+        "nueva fase",
+        "crea fase",
+    )
+    if any(m in normalized for m in today_markers):
+        return "today"
+
+    if len(normalized.split()) <= 14:
+        if re.match(
+            r"^(crea|haz|marca|completa|registra|apunta|muestra|dime)\s+",
+            normalized,
+        ):
+            return "today"
+
+    if re.search(r"\b(mi|mis|me)\s+", normalized):
+        return "full"
+
+    if len(normalized.split()) > 25:
+        return "full"
+
+    return "none"
 
 
 def classify_message(text: str) -> str:
@@ -645,15 +790,20 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         )
         api_messages = messages_to_anthropic(history_rows)
         dashboard_data = "{}"
+        ctx = classify_context(text)
+        logger.info("Contexto Atlas (precarga): %s", ctx)
 
         try:
-            if is_today_query(text):
-                dashboard = await get_today()
-            else:
+            if ctx == "full":
                 dashboard = await get_dashboard()
-            dashboard_data = json.dumps(
-                dashboard, ensure_ascii=False, separators=(",", ":")
-            )
+                dashboard_data = json.dumps(
+                    dashboard, ensure_ascii=False, separators=(",", ":")
+                )
+            elif ctx == "today":
+                dashboard = await get_today()
+                dashboard_data = json.dumps(
+                    dashboard, ensure_ascii=False, separators=(",", ":")
+                )
         except Exception:
             logger.exception("Error al consultar Atlas Vital")
 
