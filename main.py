@@ -17,7 +17,14 @@ from atlas_client import (
     create_phase,
     create_task,
     create_transaction,
+    get_all_desires_full,
+    get_areas_full,
+    get_calendar,
     get_dashboard,
+    get_desire_structure,
+    get_finance_full,
+    get_relationships_full,
+    get_reviews_summary,
     get_today,
     log_habit,
     log_health,
@@ -43,7 +50,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-MODEL = "claude-sonnet-4-5"
+SONNET_MODEL = "claude-sonnet-4-5"
+HAIKU_MODEL = "claude-haiku-4-5"
 MAX_HISTORY_MESSAGES = 60
 TELEGRAM_MAX_MESSAGE_LENGTH = 4096
 MAX_TOOL_LOOPS = 6
@@ -215,6 +223,87 @@ ATLAS_TOOLS: list[dict[str, Any]] = [
             "required": ["desire_id", "title", "start_date", "end_date"],
         },
     },
+    {
+        "name": "get_desire_structure",
+        "description": (
+            "Obtiene estructura completa de un deseo con sus fases, "
+            "objetivos y hábitos"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "desire_id": {"type": "integer"},
+            },
+            "required": ["desire_id"],
+        },
+    },
+    {
+        "name": "get_all_desires_full",
+        "description": (
+            "Obtiene todos los deseos activos con su estructura completa anidada"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    },
+    {
+        "name": "get_calendar",
+        "description": "Ve hábitos y tareas en un rango de fechas",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "start_date": {"type": "string", "format": "date"},
+                "end_date": {"type": "string", "format": "date"},
+            },
+            "required": ["start_date", "end_date"],
+        },
+    },
+    {
+        "name": "get_areas_full",
+        "description": "Obtiene todas las áreas y subáreas con sus IDs y slugs",
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    },
+    {
+        "name": "get_relationships_full",
+        "description": (
+            "Obtiene todas las relaciones personales con historial reciente"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    },
+    {
+        "name": "get_reviews_summary",
+        "description": (
+            "Obtiene resumen de últimas revisiones diaria, semanal, "
+            "mensual y anual"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    },
+    {
+        "name": "get_finance_full",
+        "description": (
+            "Obtiene presupuesto anual completo con categorías y "
+            "gastos reales del mes"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    },
 ]
 
 
@@ -229,7 +318,9 @@ def build_system_prompt(dashboard_data: str) -> str:
         "ACCIONES QUE PUEDES REALIZAR EN ATLAS VITAL (herramientas con tool use):\n"
         "- create_desire, create_task, create_habit\n"
         "- log_health, create_transaction, log_habit_completion, complete_task\n"
-        "- get_today, create_goal, create_phase\n\n"
+        "- get_today, create_goal, create_phase\n"
+        "- get_desire_structure, get_all_desires_full, get_calendar\n"
+        "- get_areas_full, get_relationships_full, get_reviews_summary, get_finance_full\n\n"
         "Cuando el usuario te pida crear, registrar, completar o consultar algo en Atlas,\n"
         "usa la herramienta correcta, ejecuta y confirma con precisión qué se guardó.\n\n"
         "Si la consulta del usuario trata sobre hoy, qué tiene o su día,\n"
@@ -245,6 +336,80 @@ def is_today_query(text: str) -> bool:
     normalized = text.lower()
     keywords = ("hoy", "qué tengo", "que tengo", "mi día", "mi dia")
     return any(keyword in normalized for keyword in keywords)
+
+
+def classify_message(text: str) -> str:
+    normalized = text.lower().strip()
+    simple_keywords = (
+        "qué tengo hoy",
+        "que tengo hoy",
+        "marcar",
+        "completar",
+        "check",
+        "registra",
+        "apunta",
+        "cuánto llevo",
+        "cuanto llevo",
+        "mis hábitos",
+        "mis habitos",
+        "mis tareas",
+        # Consultas de lectura (get_desire_structure, get_all_desires_full, etc.)
+        "estructura del deseo",
+        "estructura de mi deseo",
+        "estructura de un deseo",
+        "estructura completa del deseo",
+        "fases y objetivos del deseo",
+        "todos los deseos",
+        "mis deseos activos",
+        "deseos activos",
+        "deseos completos",
+        "listado de deseos",
+        "calendario",
+        "en el calendario",
+        "entre fechas",
+        "rango de fechas",
+        "agenda entre",
+        "mis áreas",
+        "areas de vida",
+        "áreas de vida",
+        "subáreas",
+        "subareas",
+        "mis relaciones",
+        "relaciones personales",
+        "historial de relaciones",
+        "resumen de revisiones",
+        "revisiones diaria",
+        "revision semanal",
+        "revisión mensual",
+        "revision mensual",
+        "finanzas completas",
+        "presupuesto anual",
+        "gastos del mes",
+        "gastos reales",
+    )
+    if any(keyword in normalized for keyword in simple_keywords):
+        return "simple"
+
+    words = [word for word in normalized.split() if word]
+    if len(words) < 15:
+        direct_starts = (
+            "que ",
+            "qué ",
+            "cuanto ",
+            "cuánto ",
+            "marca ",
+            "completa ",
+            "registra ",
+            "apunta ",
+            "crea ",
+            "haz ",
+            "muestra ",
+            "dime ",
+        )
+        if normalized.endswith("?") or normalized.startswith(direct_starts):
+            return "simple"
+
+    return "complex"
 
 
 def _serialize_assistant_content(content: list[Any]) -> list[dict[str, Any]]:
@@ -323,12 +488,30 @@ async def _run_atlas_tool(name: str, tool_input: dict[str, Any]) -> Any:
             start_date=tool_input["start_date"],
             end_date=tool_input["end_date"],
         )
+    if name == "get_desire_structure":
+        return await get_desire_structure(desire_id=tool_input["desire_id"])
+    if name == "get_all_desires_full":
+        return await get_all_desires_full()
+    if name == "get_calendar":
+        return await get_calendar(
+            start_date=tool_input["start_date"],
+            end_date=tool_input["end_date"],
+        )
+    if name == "get_areas_full":
+        return await get_areas_full()
+    if name == "get_relationships_full":
+        return await get_relationships_full()
+    if name == "get_reviews_summary":
+        return await get_reviews_summary()
+    if name == "get_finance_full":
+        return await get_finance_full()
     raise ValueError(f"Herramienta no soportada: {name}")
 
 
 async def generate_with_tools(
     client: AsyncAnthropic,
     *,
+    model: str,
     system_prompt: str,
     api_messages: list[dict[str, Any]],
 ) -> str:
@@ -337,11 +520,16 @@ async def generate_with_tools(
     for _ in range(MAX_TOOL_LOOPS):
         logger.info("Llamando a Claude con %d mensajes", len(conversation_messages))
         response = await client.messages.create(
-            model=MODEL,
+            model=model,
             max_tokens=8192,
             system=system_prompt,
             tools=ATLAS_TOOLS,
             messages=conversation_messages,
+        )
+        logger.info(
+            "Tokens usados - input: %s output: %s",
+            response.usage.input_tokens,
+            response.usage.output_tokens,
         )
         logger.info("Stop reason: %s", response.stop_reason)
         logger.info("Bloques en respuesta: %s", [b.type for b in response.content])
@@ -463,13 +651,20 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 dashboard = await get_today()
             else:
                 dashboard = await get_dashboard()
-            dashboard_data = json.dumps(dashboard, ensure_ascii=False, indent=2)
+            dashboard_data = json.dumps(
+                dashboard, ensure_ascii=False, separators=(",", ":")
+            )
         except Exception:
             logger.exception("Error al consultar Atlas Vital")
 
         try:
+            complexity = classify_message(text)
+            model = HAIKU_MODEL if complexity == "simple" else SONNET_MODEL
+            logger.info("Clasificacion de mensaje: %s (modelo: %s)", complexity, model)
+            logger.info("Modelo elegido: %s para: %s", model, text[:50])
             assistant_text = await generate_with_tools(
                 client,
+                model=model,
                 system_prompt=build_system_prompt(dashboard_data),
                 api_messages=api_messages,
             )
