@@ -53,7 +53,7 @@ logger = logging.getLogger(__name__)
 
 SONNET_MODEL = "claude-sonnet-4-5"
 HAIKU_MODEL = "claude-haiku-4-5"
-MAX_HISTORY_MESSAGES = 60
+MAX_HISTORY_MESSAGES = 20
 TELEGRAM_MAX_MESSAGE_LENGTH = 4096
 MAX_TOOL_LOOPS = 6
 
@@ -659,8 +659,9 @@ async def generate_with_tools(
     model: str,
     system_prompt: str,
     api_messages: list[dict[str, Any]],
-) -> str:
+) -> tuple[str, bool]:
     conversation_messages: list[dict[str, Any]] = list(api_messages)
+    tools_were_used = False
 
     for _ in range(MAX_TOOL_LOOPS):
         logger.info("Llamando a Claude con %d mensajes", len(conversation_messages))
@@ -688,6 +689,8 @@ async def generate_with_tools(
                 continue
             if block.type != "tool_use":
                 continue
+
+            tools_were_used = True
 
             logger.info("Ejecutando tool: %s con input: %s", block.name, block.input)
 
@@ -731,10 +734,13 @@ async def generate_with_tools(
 
         assistant_text = "".join(assistant_text_parts).strip()
         if assistant_text:
-            return assistant_text
-        return "(Sin contenido de texto en la respuesta.)"
+            return assistant_text, tools_were_used
+        return "(Sin contenido de texto en la respuesta.)", tools_were_used
 
-    return "No pude completar la accion solicitada tras varios intentos de herramientas."
+    return (
+        "No pude completar la accion solicitada tras varios intentos de herramientas.",
+        tools_were_used,
+    )
 
 
 async def post_init(application: Application) -> None:
@@ -775,23 +781,28 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
 
     async with session_factory_() as session:
-        await save_message(
-            session,
-            telegram_chat_id=chat_id,
-            telegram_user_id=user_id,
-            role="user",
-            content=text,
-        )
+        ctx = classify_context(text)
+        if ctx == "none":
+            history_limit = 0
+        elif ctx == "today":
+            history_limit = 5
+        else:
+            history_limit = MAX_HISTORY_MESSAGES
 
         history_rows = await fetch_conversation_messages(
             session,
             telegram_chat_id=chat_id,
-            limit=MAX_HISTORY_MESSAGES,
+            limit=history_limit,
         )
         api_messages = messages_to_anthropic(history_rows)
+        if ctx == "none":
+            api_messages = [{"role": "user", "content": text}]
+        else:
+            api_messages.append({"role": "user", "content": text})
+
         dashboard_data = "{}"
-        ctx = classify_context(text)
         logger.info("Contexto Atlas (precarga): %s", ctx)
+        logger.info("Historial Claude: limit=%s (mensajes=%d)", history_limit, len(api_messages))
 
         try:
             if ctx == "full":
@@ -812,7 +823,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             model = HAIKU_MODEL if complexity == "simple" else SONNET_MODEL
             logger.info("Clasificacion de mensaje: %s (modelo: %s)", complexity, model)
             logger.info("Modelo elegido: %s para: %s", model, text[:50])
-            assistant_text = await generate_with_tools(
+            assistant_text, tools_used = await generate_with_tools(
                 client,
                 model=model,
                 system_prompt=build_system_prompt(dashboard_data),
@@ -826,13 +837,23 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             )
             return
 
-        await save_message(
-            session,
-            telegram_chat_id=chat_id,
-            telegram_user_id=user_id,
-            role="assistant",
-            content=assistant_text,
-        )
+        response_words = len(assistant_text.split())
+        is_action = tools_used and response_words < 100
+        if not is_action:
+            await save_message(
+                session,
+                telegram_chat_id=chat_id,
+                telegram_user_id=user_id,
+                role="user",
+                content=text,
+            )
+            await save_message(
+                session,
+                telegram_chat_id=chat_id,
+                telegram_user_id=user_id,
+                role="assistant",
+                content=assistant_text,
+            )
 
     for part in chunk_text(assistant_text, TELEGRAM_MAX_MESSAGE_LENGTH):
         await update.message.reply_text(part)
