@@ -23,6 +23,7 @@ from atlas_client import (
     get_calendar,
     get_dashboard,
     get_desire_structure,
+    get_finance,
     get_finance_full,
     get_relationships_full,
     get_reviews_summary,
@@ -305,6 +306,23 @@ ATLAS_TOOLS: list[dict[str, Any]] = [
             "required": [],
         },
     },
+    {
+        "name": "get_finance",
+        "description": (
+            "Obtiene el detalle financiero del mes en curso en Atlas Vital: "
+            "lista de transacciones, totales de ingresos/gastos y balance, "
+            "categorías del presupuesto con lo gastado o cobrado este mes "
+            "(incluye nombres como gasolina, comida, etc.) y último snapshot "
+            "de patrimonio si existe. "
+            "Úsala para preguntas del tipo cuánto he gastado, cuánto en gasolina, "
+            "totales del mes o desglose por categoría."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    },
 ]
 
 
@@ -321,7 +339,8 @@ def build_system_prompt(dashboard_data: str) -> str:
         "- log_health, create_transaction, log_habit_completion, complete_task\n"
         "- get_today, create_goal, create_phase\n"
         "- get_desire_structure, get_all_desires_full, get_calendar\n"
-        "- get_areas_full, get_relationships_full, get_reviews_summary, get_finance_full\n\n"
+        "- get_areas_full, get_relationships_full, get_reviews_summary, "
+        "get_finance_full, get_finance\n\n"
         "Cuando el usuario te pida crear, registrar, completar o consultar algo en Atlas,\n"
         "usa la herramienta correcta, ejecuta y confirma con precisión qué se guardó.\n\n"
         "Si la consulta del usuario trata sobre hoy, qué tiene o su día,\n"
@@ -375,6 +394,51 @@ def classify_context(text: str) -> str:
     )
     if any(m in normalized for m in full_markers):
         return "full"
+
+    finance_markers = (
+        "gasolina",
+        "combustible",
+        "diesel",
+        "repostaje",
+        "he gastado",
+        "llevo gastado",
+        "llevo gasto",
+        "gasté en",
+        "gaste en",
+        "gastado en",
+        "gasto en ",
+        "cuánto he gastado",
+        "cuanto he gastado",
+        "cuánto llevo gastado",
+        "cuanto llevo gastado",
+        "cuánto gasté",
+        "cuanto gaste",
+        "gastos del mes",
+        "ingresos del mes",
+        "balance del mes",
+        "mis finanzas",
+        "situación financiera",
+        "situacion financiera",
+        "transacciones del mes",
+        "movimientos del mes",
+        "cuánto dinero",
+        "cuanto dinero",
+        "desglose por categoría",
+        "desglose por categoria",
+        "presupuesto del mes",
+    )
+    if any(m in normalized for m in finance_markers):
+        return "finance"
+    if re.search(
+        r"\b(cuánto|cuanto)\b.*\b(gastado|gastos|gasté|gaste)\b",
+        normalized,
+    ):
+        return "finance"
+    if re.search(r"\b(gasolina|combustible|diesel)\b", normalized) and re.search(
+        r"\b(cuánto|cuanto|qué|que|llevo|coste|costo)\b",
+        normalized,
+    ):
+        return "finance"
 
     if re.fullmatch(
         r"(hola|hey|buenas|buenos días|buenas tardes|buenas noches)(\s*[!.¡…]*)?",
@@ -531,6 +595,15 @@ def classify_message(text: str) -> str:
         "presupuesto anual",
         "gastos del mes",
         "gastos reales",
+        "gasolina",
+        "combustible",
+        "he gastado",
+        "llevo gastado",
+        "cuánto he gastado",
+        "cuanto he gastado",
+        "mis finanzas",
+        "balance del mes",
+        "ingresos del mes",
     )
     if any(keyword in normalized for keyword in simple_keywords):
         return "simple"
@@ -650,6 +723,8 @@ async def _run_atlas_tool(name: str, tool_input: dict[str, Any]) -> Any:
         return await get_reviews_summary()
     if name == "get_finance_full":
         return await get_finance_full()
+    if name == "get_finance":
+        return await get_finance()
     raise ValueError(f"Herramienta no soportada: {name}")
 
 
@@ -786,6 +861,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             history_limit = 0
         elif ctx == "today":
             history_limit = 5
+        elif ctx == "finance":
+            history_limit = 8
         else:
             history_limit = MAX_HISTORY_MESSAGES
 
@@ -812,6 +889,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 )
             elif ctx == "today":
                 dashboard = await get_today()
+                dashboard_data = json.dumps(
+                    dashboard, ensure_ascii=False, separators=(",", ":")
+                )
+            elif ctx == "finance":
+                dashboard = await get_finance()
                 dashboard_data = json.dumps(
                     dashboard, ensure_ascii=False, separators=(",", ":")
                 )

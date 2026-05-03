@@ -80,6 +80,11 @@ async def get_finance_full() -> Any:
     return await _get("/api/assistant/finance/full/")
 
 
+async def get_finance() -> Any:
+    """Mes en curso: transacciones, totales, categorías y resumen (Atlas Vital)."""
+    return await _get("/api/assistant/finance/")
+
+
 async def get_tasks_today() -> Any:
     return await _get("/api/assistant/tasks/today/")
 
