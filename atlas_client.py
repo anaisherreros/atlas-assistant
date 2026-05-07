@@ -102,15 +102,18 @@ async def create_task(
     end_time: str | None = None,
     goal_id: int | None = None,
 ) -> Any:
-    payload = {
+    payload: dict[str, Any] = {
         "title": title,
         "due_date": due_date,
         "description": description,
         "priority": priority,
-        "start_time": start_time,
-        "end_time": end_time,
-        "goal_id": goal_id,
     }
+    if start_time:
+        payload["start_time"] = start_time
+    if end_time:
+        payload["end_time"] = end_time
+    if goal_id is not None:
+        payload["goal_id"] = goal_id
     return await _post("/api/assistant/tasks/create/", payload)
 
 

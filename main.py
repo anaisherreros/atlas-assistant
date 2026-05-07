@@ -79,6 +79,14 @@ ATLAS_TOOLS: list[dict[str, Any]] = [
             "properties": {
                 "title": {"type": "string"},
                 "due_date": {"type": "string", "format": "date"},
+                "start_time": {
+                    "type": "string",
+                    "description": "Hora inicio formato HH:MM",
+                },
+                "end_time": {
+                    "type": "string",
+                    "description": "Hora fin formato HH:MM",
+                },
                 "priority": {
                     "type": "string",
                     "enum": ["high", "medium", "low"],
@@ -660,6 +668,8 @@ async def _run_atlas_tool(name: str, tool_input: dict[str, Any]) -> Any:
             due_date=tool_input["due_date"],
             description=tool_input.get("description", ""),
             priority=tool_input.get("priority", "medium"),
+            start_time=tool_input.get("start_time"),
+            end_time=tool_input.get("end_time"),
         )
     if name == "create_habit":
         return await create_habit(
