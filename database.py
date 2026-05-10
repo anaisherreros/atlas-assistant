@@ -30,6 +30,21 @@ class ChatMessage(Base):
     )
 
 
+class ChatSession(Base):
+    """Estado por chat de Telegram: agente conversacional activo."""
+
+    __tablename__ = "chat_sessions"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    telegram_chat_id: Mapped[int] = mapped_column(BigInteger, unique=True, index=True)
+    active_agent: Mapped[str] = mapped_column(String(32), default="personal")
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+
 def normalize_database_url(url: str) -> str:
     if url.startswith("postgresql+asyncpg://"):
         return url
@@ -102,3 +117,41 @@ def messages_to_anthropic(
     rows: Sequence[ChatMessage],
 ) -> list[dict[str, str]]:
     return [{"role": r.role, "content": r.content} for r in rows]
+
+
+async def get_active_agent(
+    session: AsyncSession,
+    *,
+    telegram_chat_id: int,
+) -> str:
+    stmt = select(ChatSession).where(
+        ChatSession.telegram_chat_id == telegram_chat_id,
+    )
+    result = await session.execute(stmt)
+    row = result.scalar_one_or_none()
+    if row is None:
+        return "personal"
+    return row.active_agent or "personal"
+
+
+async def set_active_agent(
+    session: AsyncSession,
+    *,
+    telegram_chat_id: int,
+    active_agent: str,
+) -> None:
+    stmt = select(ChatSession).where(
+        ChatSession.telegram_chat_id == telegram_chat_id,
+    )
+    result = await session.execute(stmt)
+    row = result.scalar_one_or_none()
+    if row is None:
+        session.add(
+            ChatSession(
+                telegram_chat_id=telegram_chat_id,
+                active_agent=active_agent,
+            )
+        )
+    else:
+        row.active_agent = active_agent
+    await session.commit()
