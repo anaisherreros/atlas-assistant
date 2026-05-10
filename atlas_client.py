@@ -93,6 +93,32 @@ async def get_tasks_pending() -> Any:
     return await _get("/api/assistant/tasks/pending/")
 
 
+async def get_health_context() -> Any:
+    """Snapshot de salud del día en Atlas (físico + emocional/mental según API).
+
+    Esperado: peso, pasos, sueño, SpO2, FC, energía, mood, estrés, claridad mental, etc.
+    GET /api/assistant/health/today/
+    """
+    return await _get("/api/assistant/health/today/")
+
+
+async def get_health_emotional() -> Any:
+    """Último registro emocional / bienestar emocional del día o más reciente.
+
+    GET /api/assistant/health/emotional/latest/
+    Si el backend unifica todo en /health/today/, puedes devolver lo mismo o un subset.
+    """
+    return await _get("/api/assistant/health/emotional/latest/")
+
+
+async def get_exercise_recent(days: int = 7) -> Any:
+    """Últimos días de ejercicio registrados. GET /api/assistant/exercise/recent/"""
+    return await _get(
+        "/api/assistant/exercise/recent/",
+        params={"days": days},
+    )
+
+
 async def create_task(
     title: str,
     due_date: str,

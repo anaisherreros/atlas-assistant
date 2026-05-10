@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import logging
 import os
 import re
@@ -9,8 +8,7 @@ from anthropic import AsyncAnthropic
 from dotenv import load_dotenv
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from agents import build_agent_system_prompt, get_agent
-from atlas_client import get_dashboard, get_finance, get_today
+from agents import build_agent_system_prompt, fetch_context_for_agent, get_agent
 from claude import generate_with_tools
 from database import (
     create_engine,
@@ -401,34 +399,16 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         else:
             api_messages.append({"role": "user", "content": text})
 
-        dashboard_data = "{}"
         logger.info(
-            "Contexto Atlas (precarga): %s | agente: %s",
+            "Contexto Atlas (precarga classify_context): %s | agente: %s",
             ctx,
             selected_agent,
         )
         logger.info("Historial chat: limit=%s (mensajes=%d)", history_limit, len(api_messages))
 
-        try:
-            if ctx == "full":
-                dashboard = await get_dashboard()
-                dashboard_data = json.dumps(
-                    dashboard, ensure_ascii=False, separators=(",", ":")
-                )
-            elif ctx == "today":
-                dashboard = await get_today()
-                dashboard_data = json.dumps(
-                    dashboard, ensure_ascii=False, separators=(",", ":")
-                )
-            elif ctx == "finance":
-                dashboard = await get_finance()
-                dashboard_data = json.dumps(
-                    dashboard, ensure_ascii=False, separators=(",", ":")
-                )
-        except Exception:
-            logger.exception("Error al consultar Atlas Vital")
+        context_data = await fetch_context_for_agent(selected_agent)
 
-        system_prompt = build_agent_system_prompt(agent, dashboard_data)
+        system_prompt = build_agent_system_prompt(agent, context_data)
 
         try:
             complexity = classify_message(text)
