@@ -190,13 +190,13 @@ async def create_transaction(
 
 
 async def create_goal(
-    phase_id: int,
+    desire_id: int,
     title: str,
     start_date: str,
     end_date: str,
 ) -> Any:
     payload = {
-        "phase_id": phase_id,
+        "desire_id": desire_id,
         "title": title,
         "start_date": start_date,
         "end_date": end_date,
@@ -252,32 +252,6 @@ async def update_desire(desire_id: int, **kwargs: Any) -> Any:
 async def delete_desire(desire_id: int) -> Any:
     payload = {"desire_id": desire_id}
     return await _post("/api/assistant/desires/delete/", payload)
-
-
-async def create_phase(
-    desire_id: int,
-    title: str,
-    start_date: str,
-    end_date: str,
-) -> Any:
-    payload = {
-        "desire_id": desire_id,
-        "title": title,
-        "start_date": start_date,
-        "end_date": end_date,
-    }
-    return await _post("/api/assistant/phases/create/", payload)
-
-
-async def update_phase(phase_id: int, **kwargs: Any) -> Any:
-    payload: dict[str, Any] = {"phase_id": phase_id}
-    payload.update(kwargs)
-    return await _post("/api/assistant/phases/update/", payload)
-
-
-async def delete_phase(phase_id: int) -> Any:
-    payload = {"phase_id": phase_id}
-    return await _post("/api/assistant/phases/delete/", payload)
 
 
 async def update_goal(goal_id: int, **kwargs: Any) -> Any:
@@ -348,6 +322,22 @@ async def create_relationship(
         "notes": notes,
     }
     return await _post("/api/assistant/relationships/create/", payload)
+
+
+async def update_relationship(
+    person_id: int,
+    name: str | None = None,
+    relationship_type: str | None = None,
+    notes: str | None = None,
+) -> Any:
+    payload: dict[str, Any] = {"person_id": person_id}
+    if name is not None:
+        payload["name"] = name
+    if relationship_type is not None:
+        payload["relationship_type"] = relationship_type
+    if notes is not None:
+        payload["notes"] = notes
+    return await _post("/api/assistant/relationships/update/", payload)
 
 
 async def log_relationship(

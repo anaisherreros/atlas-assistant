@@ -6,18 +6,28 @@ import json
 import re
 from typing import Any
 
-from anthropic import AsyncAnthropic
+from openai import AsyncOpenAI
 from dotenv import load_dotenv
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from atlas_client import (
+    _post,
     complete_task,
+    create_daily_review,
     create_desire,
     create_goal,
     create_habit,
-    create_phase,
+    create_monthly_review,
+    create_patrimony_snapshot,
+    create_relationship,
     create_task,
     create_transaction,
+    create_weekly_review,
+    delete_desire,
+    delete_goal,
+    delete_habit,
+    delete_task,
+    delete_transaction,
     get_all_desires_full,
     get_areas_full,
     get_calendar,
@@ -27,9 +37,19 @@ from atlas_client import (
     get_finance_full,
     get_relationships_full,
     get_reviews_summary,
+    get_tasks_pending,
     get_today,
-    log_habit,
+    log_exercise,
     log_health,
+    log_habit,
+    log_relationship,
+    log_self_relationship,
+    update_desire,
+    update_goal,
+    update_habit,
+    update_health,
+    update_relationship,
+    update_task,
 )
 from database import (
     create_engine,
@@ -52,285 +72,389 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-SONNET_MODEL = "claude-sonnet-4-5"
-HAIKU_MODEL = "claude-haiku-4-5"
+MODEL = "qwen2.5:14b"
 MAX_HISTORY_MESSAGES = 20
 TELEGRAM_MAX_MESSAGE_LENGTH = 4096
-MAX_TOOL_LOOPS = 6
+MAX_TOOL_LOOPS = 12
 
-ATLAS_TOOLS: list[dict[str, Any]] = [
-    {
-        "name": "create_desire",
-        "description": "Crea un nuevo deseo en Atlas Vital",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "title": {"type": "string"},
-                "description": {"type": "string"},
+
+def _tool(
+    name: str,
+    description: str,
+    properties: dict[str, Any],
+    required: list[str] | None = None,
+) -> dict[str, Any]:
+    return {
+        "type": "function",
+        "function": {
+            "name": name,
+            "description": description,
+            "parameters": {
+                "type": "object",
+                "properties": properties,
+                "required": required or [],
             },
-            "required": ["title"],
         },
-    },
-    {
-        "name": "create_task",
-        "description": "Crea una tarea en Atlas Vital",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "title": {"type": "string"},
-                "due_date": {"type": "string", "format": "date"},
-                "start_time": {
-                    "type": "string",
-                    "description": "Hora inicio formato HH:MM",
-                },
-                "end_time": {
-                    "type": "string",
-                    "description": "Hora fin formato HH:MM",
-                },
-                "priority": {
-                    "type": "string",
-                    "enum": ["high", "medium", "low"],
-                },
-                "description": {"type": "string"},
+    }
+
+
+ATLAS_OPENAI_TOOLS: list[dict[str, Any]] = [
+    _tool(
+        "get_today",
+        "Obtiene tareas y hábitos de hoy en Atlas Vital.",
+        {},
+        [],
+    ),
+    _tool(
+        "get_dashboard",
+        "Obtiene el dashboard completo (resumen amplio de Atlas Vital).",
+        {},
+        [],
+    ),
+    _tool(
+        "get_all_desires_full",
+        "Lista todos los deseos activos con estructura anidada.",
+        {},
+        [],
+    ),
+    _tool(
+        "get_desire_structure",
+        "Estructura completa de un deseo: objetivos, hábitos y datos asociados.",
+        {"desire_id": {"type": "integer", "description": "ID del deseo"}},
+        ["desire_id"],
+    ),
+    _tool(
+        "get_areas_full",
+        "Todas las áreas y subáreas con IDs y slugs.",
+        {},
+        [],
+    ),
+    _tool(
+        "get_relationships_full",
+        "Relaciones personales con historial reciente.",
+        {},
+        [],
+    ),
+    _tool(
+        "get_reviews_summary",
+        "Resumen de últimas revisiones diaria, semanal, mensual y anual.",
+        {},
+        [],
+    ),
+    _tool(
+        "get_finance_full",
+        "Presupuesto anual completo con categorías y gastos del mes.",
+        {},
+        [],
+    ),
+    _tool(
+        "get_finance",
+        "Detalle financiero del mes en curso: transacciones, totales y categorías.",
+        {},
+        [],
+    ),
+    _tool(
+        "get_calendar",
+        "Hábitos y tareas entre dos fechas (YYYY-MM-DD).",
+        {
+            "start_date": {"type": "string", "description": "Inicio (YYYY-MM-DD)"},
+            "end_date": {"type": "string", "description": "Fin (YYYY-MM-DD)"},
+        },
+        ["start_date", "end_date"],
+    ),
+    _tool(
+        "get_tasks_pending",
+        "Lista de tareas pendientes en Atlas Vital.",
+        {},
+        [],
+    ),
+    _tool(
+        "create_desire",
+        "Crea un nuevo deseo.",
+        {
+            "title": {"type": "string"},
+            "description": {"type": "string", "description": "Opcional"},
+            "area": {"type": "string", "description": "Slug o nombre de área, opcional"},
+        },
+        ["title"],
+    ),
+    _tool(
+        "update_desire",
+        "Actualiza un deseo existente (solo envía campos a cambiar).",
+        {
+            "desire_id": {"type": "integer"},
+            "title": {"type": "string"},
+            "description": {"type": "string"},
+            "status": {"type": "string"},
+            "priority": {"type": "string"},
+        },
+        ["desire_id"],
+    ),
+    _tool(
+        "delete_desire",
+        "Elimina un deseo.",
+        {"desire_id": {"type": "integer"}},
+        ["desire_id"],
+    ),
+    _tool(
+        "create_goal",
+        "Crea un objetivo asociado a un deseo (desire_id).",
+        {
+            "desire_id": {"type": "integer"},
+            "title": {"type": "string"},
+            "start_date": {"type": "string"},
+            "end_date": {"type": "string"},
+            "success_criteria": {"type": "string", "description": "Texto orientativo; puede no persistir en API"},
+        },
+        ["desire_id", "title", "start_date", "end_date"],
+    ),
+    _tool(
+        "update_goal",
+        "Actualiza un objetivo.",
+        {
+            "goal_id": {"type": "integer"},
+            "title": {"type": "string"},
+            "status": {"type": "string"},
+            "start_date": {"type": "string"},
+            "end_date": {"type": "string"},
+        },
+        ["goal_id"],
+    ),
+    _tool(
+        "delete_goal",
+        "Elimina un objetivo.",
+        {"goal_id": {"type": "integer"}},
+        ["goal_id"],
+    ),
+    _tool(
+        "create_habit",
+        "Crea un hábito.",
+        {
+            "title": {"type": "string"},
+            "start_date": {"type": "string"},
+            "frequency_type": {
+                "type": "string",
+                "enum": ["daily", "weekly", "monthly"],
             },
-            "required": ["title", "due_date"],
-        },
-    },
-    {
-        "name": "create_habit",
-        "description": "Crea un hábito en Atlas Vital",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "title": {"type": "string"},
-                "start_date": {"type": "string", "format": "date"},
-                "frequency_type": {
-                    "type": "string",
-                    "enum": ["daily", "weekly", "monthly"],
-                },
+            "goal_id": {"type": "integer", "description": "Opcional"},
+            "times_per_period": {"type": "integer"},
+            "weekdays": {
+                "type": "array",
+                "items": {"type": "integer"},
+                "description": "Días 0-6 si aplica",
             },
-            "required": ["title", "start_date", "frequency_type"],
         },
-    },
-    {
-        "name": "log_health",
-        "description": "Registra datos de salud de hoy",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "date": {"type": "string", "format": "date"},
-                "physical": {
-                    "type": "object",
-                    "properties": {
-                        "weight_kg": {"type": "number"},
-                        "sleep_hours": {"type": "number"},
-                        "steps": {"type": "integer"},
-                        "heart_rate": {"type": "integer"},
-                    },
-                },
-                "emotional": {
-                    "type": "object",
-                    "properties": {
-                        "mood": {"type": "integer", "minimum": 1, "maximum": 5},
-                        "energy_level": {"type": "integer", "minimum": 1, "maximum": 10},
-                    },
-                },
-                "mental": {
-                    "type": "object",
-                    "properties": {
-                        "stress_level": {
-                            "type": "integer",
-                            "minimum": 1,
-                            "maximum": 10,
-                        },
-                        "mental_clarity": {
-                            "type": "integer",
-                            "minimum": 1,
-                            "maximum": 10,
-                        },
-                    },
-                },
-            },
-            "required": ["date"],
+        ["title", "start_date", "frequency_type"],
+    ),
+    _tool(
+        "update_habit",
+        "Actualiza un hábito.",
+        {
+            "habit_id": {"type": "integer"},
+            "title": {"type": "string"},
+            "status": {"type": "string"},
+            "frequency_type": {"type": "string"},
+            "start_date": {"type": "string"},
+            "target_end_date": {"type": "string"},
         },
-    },
-    {
-        "name": "create_transaction",
-        "description": "Registra una transacción financiera",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "description": {"type": "string"},
-                "amount": {"type": "number"},
-                "transaction_type": {
-                    "type": "string",
-                    "enum": ["income", "expense"],
-                },
-                "date": {"type": "string", "format": "date"},
-            },
-            "required": ["description", "amount", "transaction_type", "date"],
+        ["habit_id"],
+    ),
+    _tool(
+        "delete_habit",
+        "Elimina un hábito.",
+        {"habit_id": {"type": "integer"}},
+        ["habit_id"],
+    ),
+    _tool(
+        "log_habit_completion",
+        "Marca progreso de un hábito en una fecha.",
+        {
+            "habit_id": {"type": "integer"},
+            "date": {"type": "string"},
+            "completed": {"type": "boolean"},
+            "note": {"type": "string"},
         },
-    },
-    {
-        "name": "log_habit_completion",
-        "description": "Marca un hábito como completado hoy",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "habit_id": {"type": "integer"},
-                "date": {"type": "string", "format": "date"},
-                "completed": {"type": "boolean"},
-                "note": {"type": "string"},
-            },
-            "required": ["habit_id", "date", "completed"],
+        ["habit_id", "date", "completed"],
+    ),
+    _tool(
+        "create_task",
+        "Crea una tarea.",
+        {
+            "title": {"type": "string"},
+            "due_date": {"type": "string"},
+            "priority": {"type": "string", "enum": ["high", "medium", "low"]},
+            "description": {"type": "string"},
+            "start_time": {"type": "string", "description": "HH:MM"},
+            "end_time": {"type": "string", "description": "HH:MM"},
+            "goal_id": {"type": "integer"},
         },
-    },
-    {
-        "name": "complete_task",
-        "description": "Marca una tarea como completada",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "task_id": {"type": "integer"},
-            },
-            "required": ["task_id"],
+        ["title", "due_date"],
+    ),
+    _tool(
+        "update_task",
+        "Actualiza una tarea.",
+        {
+            "task_id": {"type": "integer"},
+            "title": {"type": "string"},
+            "due_date": {"type": "string"},
+            "priority": {"type": "string"},
+            "status": {"type": "string"},
+            "start_time": {"type": "string"},
+            "end_time": {"type": "string"},
         },
-    },
-    {
-        "name": "get_today",
-        "description": "Obtiene tareas y hábitos de hoy",
-        "input_schema": {
-            "type": "object",
-            "properties": {},
-            "required": [],
+        ["task_id"],
+    ),
+    _tool(
+        "complete_task",
+        "Marca una tarea como completada.",
+        {"task_id": {"type": "integer"}},
+        ["task_id"],
+    ),
+    _tool(
+        "delete_task",
+        "Elimina una tarea.",
+        {"task_id": {"type": "integer"}},
+        ["task_id"],
+    ),
+    _tool(
+        "log_health",
+        "Registra datos de salud (objetos physical/emotional/mental como en Atlas).",
+        {
+            "date": {"type": "string"},
+            "physical": {"type": "object", "description": "Opcional: peso, pasos, etc."},
+            "emotional": {"type": "object"},
+            "mental": {"type": "object"},
         },
-    },
-    {
-        "name": "create_goal",
-        "description": "Crea un objetivo dentro de una fase",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "phase_id": {"type": "integer"},
-                "title": {"type": "string"},
-                "start_date": {"type": "string", "format": "date"},
-                "end_date": {"type": "string", "format": "date"},
-            },
-            "required": ["phase_id", "title", "start_date", "end_date"],
+        ["date"],
+    ),
+    _tool(
+        "update_health",
+        "Actualiza puntuaciones simples de salud para una fecha.",
+        {
+            "date": {"type": "string"},
+            "physical": {"type": "integer"},
+            "emotional": {"type": "integer"},
+            "mental": {"type": "integer"},
         },
-    },
-    {
-        "name": "create_phase",
-        "description": "Crea una fase dentro de un deseo",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "desire_id": {"type": "integer"},
-                "title": {"type": "string"},
-                "start_date": {"type": "string", "format": "date"},
-                "end_date": {"type": "string", "format": "date"},
-            },
-            "required": ["desire_id", "title", "start_date", "end_date"],
+        ["date"],
+    ),
+    _tool(
+        "log_exercise",
+        "Registra una sesión de ejercicio.",
+        {
+            "date": {"type": "string"},
+            "exercise_type": {"type": "string"},
+            "duration_minutes": {"type": "integer"},
+            "note": {"type": "string"},
         },
-    },
-    {
-        "name": "get_desire_structure",
-        "description": (
-            "Obtiene estructura completa de un deseo con sus fases, "
-            "objetivos y hábitos"
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "desire_id": {"type": "integer"},
-            },
-            "required": ["desire_id"],
+        ["date", "exercise_type", "duration_minutes"],
+    ),
+    _tool(
+        "create_transaction",
+        "Registra una transacción financiera.",
+        {
+            "description": {"type": "string"},
+            "amount": {"type": "number"},
+            "transaction_type": {"type": "string", "enum": ["income", "expense"]},
+            "date": {"type": "string"},
+            "category_id": {"type": "integer", "description": "Opcional"},
         },
-    },
-    {
-        "name": "get_all_desires_full",
-        "description": (
-            "Obtiene todos los deseos activos con su estructura completa anidada"
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {},
-            "required": [],
+        ["description", "amount", "transaction_type", "date"],
+    ),
+    _tool(
+        "delete_transaction",
+        "Elimina una transacción por ID.",
+        {"transaction_id": {"type": "integer"}},
+        ["transaction_id"],
+    ),
+    _tool(
+        "create_patrimony_snapshot",
+        "Crea un snapshot de patrimonio; accounts son campos extra según API Atlas.",
+        {
+            "date": {"type": "string"},
+            "accounts": {"type": "object", "description": "Objeto JSON con cuentas / totales"},
         },
-    },
-    {
-        "name": "get_calendar",
-        "description": "Ve hábitos y tareas en un rango de fechas",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "start_date": {"type": "string", "format": "date"},
-                "end_date": {"type": "string", "format": "date"},
-            },
-            "required": ["start_date", "end_date"],
+        ["date"],
+    ),
+    _tool(
+        "create_relationship",
+        "Crea una relación personal.",
+        {
+            "name": {"type": "string"},
+            "relationship_type": {"type": "string"},
+            "notes": {"type": "string"},
         },
-    },
-    {
-        "name": "get_areas_full",
-        "description": "Obtiene todas las áreas y subáreas con sus IDs y slugs",
-        "input_schema": {
-            "type": "object",
-            "properties": {},
-            "required": [],
+        ["name", "relationship_type"],
+    ),
+    _tool(
+        "update_relationship",
+        "Actualiza datos de una persona en relaciones (person_id).",
+        {
+            "person_id": {"type": "integer"},
+            "name": {"type": "string"},
+            "relationship_type": {"type": "string"},
+            "notes": {"type": "string"},
         },
-    },
-    {
-        "name": "get_relationships_full",
-        "description": (
-            "Obtiene todas las relaciones personales con historial reciente"
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {},
-            "required": [],
+        ["person_id"],
+    ),
+    _tool(
+        "log_relationship",
+        "Registra una interacción con una persona.",
+        {
+            "person_id": {"type": "integer"},
+            "date": {"type": "string"},
+            "interaction_summary": {"type": "string"},
+            "feeling": {"type": "string"},
+            "note": {"type": "string"},
         },
-    },
-    {
-        "name": "get_reviews_summary",
-        "description": (
-            "Obtiene resumen de últimas revisiones diaria, semanal, "
-            "mensual y anual"
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {},
-            "required": [],
+        ["person_id", "date", "interaction_summary", "feeling"],
+    ),
+    _tool(
+        "log_self_relationship",
+        "Registra reflexión sobre la relación contigo misma.",
+        {
+            "date": {"type": "string"},
+            "self_feeling": {"type": "string"},
+            "things_i_like": {"type": "string"},
+            "working_on": {"type": "string"},
+            "note": {"type": "string"},
         },
-    },
-    {
-        "name": "get_finance_full",
-        "description": (
-            "Obtiene presupuesto anual completo con categorías y "
-            "gastos reales del mes"
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {},
-            "required": [],
+        ["date", "self_feeling"],
+    ),
+    _tool(
+        "create_daily_review",
+        "Crea revisión diaria.",
+        {
+            "date": {"type": "string"},
+            "day_score": {"type": "integer"},
+            "mood": {"type": "string"},
+            "note": {"type": "string"},
         },
-    },
-    {
-        "name": "get_finance",
-        "description": (
-            "Obtiene el detalle financiero del mes en curso en Atlas Vital: "
-            "lista de transacciones, totales de ingresos/gastos y balance, "
-            "categorías del presupuesto con lo gastado o cobrado este mes "
-            "(incluye nombres como gasolina, comida, etc.) y último snapshot "
-            "de patrimonio si existe. "
-            "Úsala para preguntas del tipo cuánto he gastado, cuánto en gasolina, "
-            "totales del mes o desglose por categoría."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {},
-            "required": [],
+        ["date"],
+    ),
+    _tool(
+        "create_weekly_review",
+        "Crea revisión semanal.",
+        {
+            "week_start": {"type": "string"},
+            "week_end": {"type": "string"},
+            "what_went_well": {"type": "string"},
+            "what_was_hard": {"type": "string"},
+            "energy_score": {"type": "integer"},
         },
-    },
+        ["week_start", "week_end"],
+    ),
+    _tool(
+        "create_monthly_review",
+        "Crea revisión mensual.",
+        {
+            "year": {"type": "integer"},
+            "month": {"type": "integer"},
+            "financial_review": {"type": "string"},
+            "areas_review": {"type": "string"},
+        },
+        ["year", "month"],
+    ),
 ]
 
 
@@ -338,21 +462,18 @@ def build_system_prompt(dashboard_data: str) -> str:
     return (
         "Eres el asistente personal de Anaïs.\n"
         "Eres su mano derecha, directa y práctica.\n\n"
-        "CONTEXTO ACTUAL DE SU VIDA (datos reales de Atlas Vital):\n"
+        "CONTEXTO ACTUAL DE SU VIDA (datos reales de Atlas Vital, incluidos en este mensaje):\n"
         f"{dashboard_data}\n\n"
-        "Usa estos datos para dar respuestas personalizadas.\n"
-        "Si los datos están vacíos en algún área, simplemente no los menciones.\n\n"
-        "ACCIONES QUE PUEDES REALIZAR EN ATLAS VITAL (herramientas con tool use):\n"
-        "- create_desire, create_task, create_habit\n"
-        "- log_health, create_transaction, log_habit_completion, complete_task\n"
-        "- get_today, create_goal, create_phase\n"
-        "- get_desire_structure, get_all_desires_full, get_calendar\n"
-        "- get_areas_full, get_relationships_full, get_reviews_summary, "
-        "get_finance_full, get_finance\n\n"
-        "Cuando el usuario te pida crear, registrar, completar o consultar algo en Atlas,\n"
-        "usa la herramienta correcta, ejecuta y confirma con precisión qué se guardó.\n\n"
-        "Si la consulta del usuario trata sobre hoy, qué tiene o su día,\n"
-        "prioriza usar get_today() en lugar de get_dashboard() completo."
+        "Usa estos datos como base, pero las herramientas (function calling) te permiten "
+        "leer y modificar Atlas Vital en tiempo real.\n"
+        "Cuando el usuario pida crear, actualizar, borrar o consultar datos concretos, "
+        "usa la herramienta adecuada, ejecuta y confirma con precisión qué ocurrió.\n\n"
+        "Para crear un objetivo (goal) necesitas el desire_id; si no lo tienes, usa "
+        "get_desire_structure o get_all_desires_full.\n\n"
+        "Si los datos del contexto están vacíos en algún área, los puedes completar con las "
+        "herramientas de lectura.\n\n"
+        "Si la consulta es solo sobre hoy o el día, prioriza get_today o el bloque JSON del "
+        "contexto cuando ya refleje el día."
     )
 
 
@@ -533,8 +654,6 @@ def classify_context(text: str) -> str:
         "gastos reales",
         "crea un deseo",
         "crea deseo",
-        "nueva fase",
-        "crea fase",
     )
     if any(m in normalized for m in today_markers):
         return "today"
@@ -575,7 +694,7 @@ def classify_message(text: str) -> str:
         "estructura de mi deseo",
         "estructura de un deseo",
         "estructura completa del deseo",
-        "fases y objetivos del deseo",
+        "objetivos del deseo",
         "todos los deseos",
         "mis deseos activos",
         "deseos activos",
@@ -638,93 +757,22 @@ def classify_message(text: str) -> str:
     return "complex"
 
 
-def _serialize_assistant_content(content: list[Any]) -> list[dict[str, Any]]:
-    blocks: list[dict[str, Any]] = []
-    for block in content:
-        block_type = getattr(block, "type", None)
-        if block_type == "text":
-            blocks.append({"type": "text", "text": block.text})
-        elif block_type == "tool_use":
-            blocks.append(
-                {
-                    "type": "tool_use",
-                    "id": block.id,
-                    "name": block.name,
-                    "input": block.input,
-                }
-            )
-    return blocks
+def _omit_keys(data: dict[str, Any], *keys: str) -> dict[str, Any]:
+    return {k: v for k, v in data.items() if k not in keys}
 
 
-async def _run_atlas_tool(name: str, tool_input: dict[str, Any]) -> Any:
-    if name == "create_desire":
-        return await create_desire(
-            title=tool_input["title"],
-            description=tool_input.get("description", ""),
-        )
-    if name == "create_task":
-        return await create_task(
-            title=tool_input["title"],
-            due_date=tool_input["due_date"],
-            description=tool_input.get("description", ""),
-            priority=tool_input.get("priority", "medium"),
-            start_time=tool_input.get("start_time"),
-            end_time=tool_input.get("end_time"),
-        )
-    if name == "create_habit":
-        return await create_habit(
-            title=tool_input["title"],
-            start_date=tool_input["start_date"],
-            frequency_type=tool_input["frequency_type"],
-        )
-    if name == "log_habit_completion":
-        return await log_habit(
-            habit_id=tool_input["habit_id"],
-            date=tool_input["date"],
-            completed=tool_input["completed"],
-            note=tool_input.get("note", ""),
-        )
-    if name == "log_health":
-        return await log_health(
-            date=tool_input["date"],
-            physical=tool_input.get("physical"),
-            emotional=tool_input.get("emotional"),
-            mental=tool_input.get("mental"),
-        )
-    if name == "create_transaction":
-        return await create_transaction(
-            description=tool_input["description"],
-            amount=tool_input["amount"],
-            transaction_type=tool_input["transaction_type"],
-            date=tool_input["date"],
-        )
-    if name == "complete_task":
-        return await complete_task(task_id=tool_input["task_id"])
+async def dispatch_atlas_tool(name: str, raw: dict[str, Any]) -> Any:
+    """Ejecuta una herramienta Atlas según el nombre OpenAI y los argumentos JSON."""
+    args = dict(raw)
+
     if name == "get_today":
         return await get_today()
-    if name == "create_goal":
-        return await create_goal(
-            phase_id=tool_input["phase_id"],
-            title=tool_input["title"],
-            start_date=tool_input["start_date"],
-            end_date=tool_input["end_date"],
-        )
-    if name == "create_phase":
-        return await create_phase(
-            desire_id=tool_input["desire_id"],
-            title=tool_input["title"],
-            start_date=tool_input["start_date"],
-            end_date=tool_input["end_date"],
-        )
-    if name == "get_desire_structure":
-        return await get_desire_structure(desire_id=tool_input["desire_id"])
+    if name == "get_dashboard":
+        return await get_dashboard()
     if name == "get_all_desires_full":
         return await get_all_desires_full()
-    if name == "get_calendar":
-        return await get_calendar(
-            start_date=tool_input["start_date"],
-            end_date=tool_input["end_date"],
-        )
+    if name == "get_desire_structure":
+        return await get_desire_structure(int(args["desire_id"]))
     if name == "get_areas_full":
         return await get_areas_full()
     if name == "get_relationships_full":
@@ -735,95 +783,269 @@ async def _run_atlas_tool(name: str, tool_input: dict[str, Any]) -> Any:
         return await get_finance_full()
     if name == "get_finance":
         return await get_finance()
-    raise ValueError(f"Herramienta no soportada: {name}")
+    if name == "get_calendar":
+        return await get_calendar(args["start_date"], args["end_date"])
+    if name == "get_tasks_pending":
+        return await get_tasks_pending()
+
+    if name == "create_desire":
+        return await create_desire(
+            title=args["title"],
+            description=args.get("description", ""),
+            area=args.get("area", ""),
+        )
+    if name == "update_desire":
+        did = int(args.pop("desire_id"))
+        return await update_desire(did, **_omit_keys(args, "desire_id"))
+    if name == "delete_desire":
+        return await delete_desire(int(args["desire_id"]))
+
+    if name == "create_goal":
+        return await create_goal(
+            desire_id=int(args["desire_id"]),
+            title=args["title"],
+            start_date=args["start_date"],
+            end_date=args["end_date"],
+        )
+    if name == "update_goal":
+        gid = int(args.pop("goal_id"))
+        return await update_goal(gid, **_omit_keys(args, "goal_id"))
+    if name == "delete_goal":
+        return await delete_goal(int(args["goal_id"]))
+
+    if name == "create_habit":
+        extra: dict[str, Any] = {}
+        if args.get("times_per_period") is not None:
+            extra["times_per_period"] = args["times_per_period"]
+        if args.get("weekdays") is not None:
+            extra["weekdays"] = args["weekdays"]
+        return await create_habit(
+            title=args["title"],
+            start_date=args["start_date"],
+            frequency_type=args.get("frequency_type", "daily"),
+            goal_id=args.get("goal_id"),
+            **extra,
+        )
+    if name == "update_habit":
+        hid = int(args.pop("habit_id"))
+        return await update_habit(hid, **_omit_keys(args, "habit_id"))
+    if name == "delete_habit":
+        return await delete_habit(int(args["habit_id"]))
+    if name == "log_habit_completion":
+        return await log_habit(
+            habit_id=int(args["habit_id"]),
+            date=args["date"],
+            completed=bool(args["completed"]),
+            note=args.get("note", ""),
+        )
+
+    if name == "create_task":
+        return await create_task(
+            title=args["title"],
+            due_date=args["due_date"],
+            description=args.get("description", ""),
+            priority=args.get("priority", "medium"),
+            start_time=args.get("start_time"),
+            end_time=args.get("end_time"),
+            goal_id=args.get("goal_id"),
+        )
+    if name == "update_task":
+        tid = int(args.pop("task_id"))
+        return await update_task(tid, **_omit_keys(args, "task_id"))
+    if name == "complete_task":
+        return await complete_task(int(args["task_id"]))
+    if name == "delete_task":
+        return await delete_task(int(args["task_id"]))
+
+    if name == "log_health":
+        return await log_health(
+            date=args["date"],
+            physical=args.get("physical"),
+            emotional=args.get("emotional"),
+            mental=args.get("mental"),
+        )
+    if name == "update_health":
+        return await update_health(
+            date=args["date"],
+            physical=args.get("physical"),
+            emotional=args.get("emotional"),
+            mental=args.get("mental"),
+        )
+    if name == "log_exercise":
+        return await log_exercise(
+            date=args["date"],
+            exercise_type=args["exercise_type"],
+            duration_minutes=int(args["duration_minutes"]),
+            note=args.get("note", ""),
+        )
+
+    if name == "create_transaction":
+        payload: dict[str, Any] = {
+            "description": args["description"],
+            "amount": float(args["amount"]),
+            "transaction_type": args["transaction_type"],
+            "date": args["date"],
+        }
+        if args.get("category_id") is not None:
+            payload["category_id"] = int(args["category_id"])
+            return await _post("/api/assistant/finance/transaction/", payload)
+        return await create_transaction(
+            description=payload["description"],
+            amount=payload["amount"],
+            transaction_type=payload["transaction_type"],
+            date=payload["date"],
+        )
+    if name == "delete_transaction":
+        return await delete_transaction(int(args["transaction_id"]))
+    if name == "create_patrimony_snapshot":
+        d = args["date"]
+        ac = args.get("accounts")
+        if isinstance(ac, dict):
+            return await create_patrimony_snapshot(d, **ac)
+        return await create_patrimony_snapshot(d)
+
+    if name == "create_relationship":
+        return await create_relationship(
+            name=args["name"],
+            relationship_type=args["relationship_type"],
+            notes=args.get("notes", ""),
+        )
+    if name == "update_relationship":
+        return await update_relationship(
+            person_id=int(args["person_id"]),
+            name=args.get("name"),
+            relationship_type=args.get("relationship_type"),
+            notes=args.get("notes"),
+        )
+    if name == "log_relationship":
+        return await log_relationship(
+            person_id=int(args["person_id"]),
+            date=args["date"],
+            interaction_summary=args["interaction_summary"],
+            feeling=args["feeling"],
+            note=args.get("note", ""),
+        )
+    if name == "log_self_relationship":
+        note = (args.get("note") or "").strip()
+        things = args.get("things_i_like") or ""
+        if note:
+            things = f"{things}\n\nNota: {note}".strip() if things else f"Nota: {note}"
+        return await log_self_relationship(
+            date=args["date"],
+            self_feeling=args["self_feeling"],
+            things_i_like=things,
+            working_on=args.get("working_on", ""),
+        )
+
+    if name == "create_daily_review":
+        return await create_daily_review(
+            date=args["date"],
+            day_score=args.get("day_score"),
+            mood=args.get("mood", ""),
+            note=args.get("note", ""),
+        )
+    if name == "create_weekly_review":
+        ws, we = args["week_start"], args["week_end"]
+        rest = _omit_keys(args, "week_start", "week_end")
+        return await create_weekly_review(ws, we, **rest)
+    if name == "create_monthly_review":
+        y, m = int(args["year"]), int(args["month"])
+        rest = _omit_keys(args, "year", "month")
+        return await create_monthly_review(y, m, **rest)
+
+    raise ValueError(f"Herramienta no reconocida: {name}")
 
 
 async def generate_with_tools(
-    client: AsyncAnthropic,
+    client: AsyncOpenAI,
     *,
     model: str,
     system_prompt: str,
     api_messages: list[dict[str, Any]],
 ) -> tuple[str, bool]:
-    conversation_messages: list[dict[str, Any]] = list(api_messages)
+    conversation: list[dict[str, Any]] = [
+        {"role": "system", "content": system_prompt},
+        *api_messages,
+    ]
     tools_were_used = False
 
-    for _ in range(MAX_TOOL_LOOPS):
-        logger.info("Llamando a Claude con %d mensajes", len(conversation_messages))
-        response = await client.messages.create(
-            model=model,
-            max_tokens=8192,
-            system=system_prompt,
-            tools=ATLAS_TOOLS,
-            messages=conversation_messages,
-        )
+    for loop_idx in range(MAX_TOOL_LOOPS):
         logger.info(
-            "Tokens usados - input: %s output: %s",
-            response.usage.input_tokens,
-            response.usage.output_tokens,
+            "Llamada modelo [%s] con %d mensajes (tools habilitadas)",
+            loop_idx + 1,
+            len(conversation),
         )
-        logger.info("Stop reason: %s", response.stop_reason)
-        logger.info("Bloques en respuesta: %s", [b.type for b in response.content])
-        assistant_text_parts: list[str] = []
-        assistant_content = _serialize_assistant_content(list(response.content))
-        tool_result_blocks: list[dict[str, Any]] = []
-
-        for block in response.content:
-            if block.type == "text":
-                assistant_text_parts.append(block.text)
-                continue
-            if block.type != "tool_use":
-                continue
-
-            tools_were_used = True
-
-            logger.info("Ejecutando tool: %s con input: %s", block.name, block.input)
-
-            try:
-                result = await _run_atlas_tool(block.name, block.input)
-                logger.info("Resultado de tool %s: %s", block.name, result)
-                tool_result_blocks.append(
-                    {
-                        "type": "tool_result",
-                        "tool_use_id": block.id,
-                        "content": json.dumps(result, ensure_ascii=False),
-                    }
-                )
-            except Exception as exc:
-                logger.error("Error en tool %s: %s", block.name, exc)
-                logger.exception("Error ejecutando tool de Atlas Vital: %s", block.name)
-                tool_result_blocks.append(
-                    {
-                        "type": "tool_result",
-                        "tool_use_id": block.id,
-                        "content": f"Error al ejecutar {block.name}: {exc}",
-                        "is_error": True,
-                    }
-                )
-
-        conversation_messages.append(
-            {
-                "role": "assistant",
-                "content": assistant_content,
-            }
+        response = await client.chat.completions.create(
+            model=model,
+            messages=conversation,
+            tools=ATLAS_OPENAI_TOOLS,
+            tool_choice="auto",
+            max_tokens=8192,
         )
+        usage = response.usage
+        if usage is not None:
+            logger.info(
+                "Tokens - prompt: %s completion: %s",
+                usage.prompt_tokens,
+                usage.completion_tokens,
+            )
 
-        if tool_result_blocks:
-            conversation_messages.append(
+        choice = response.choices[0]
+        msg = choice.message
+        finish = choice.finish_reason
+        logger.info("Finish reason: %s", finish)
+
+        if not msg.tool_calls:
+            text = (msg.content or "").strip()
+            return (
+                text or "(Sin contenido de texto en la respuesta.)",
+                tools_were_used,
+            )
+
+        tools_were_used = True
+        assistant_entry: dict[str, Any] = {
+            "role": "assistant",
+            "content": msg.content,
+            "tool_calls": [
                 {
-                    "role": "user",
-                    "content": tool_result_blocks,
+                    "id": tc.id,
+                    "type": "function",
+                    "function": {
+                        "name": tc.function.name,
+                        "arguments": tc.function.arguments or "{}",
+                    },
+                }
+                for tc in msg.tool_calls
+            ],
+        }
+        conversation.append(assistant_entry)
+
+        for tc in msg.tool_calls:
+            fname = tc.function.name
+            raw_args = tc.function.arguments or "{}"
+            try:
+                parsed: dict[str, Any] = json.loads(raw_args)
+            except json.JSONDecodeError:
+                logger.warning("JSON inválido en tool %s: %s", fname, raw_args)
+                parsed = {}
+            logger.info("Ejecutando tool %s con %s", fname, parsed)
+            try:
+                result = await dispatch_atlas_tool(fname, parsed)
+                out = json.dumps(result, ensure_ascii=False)
+            except Exception as exc:
+                logger.exception("Error en tool %s", fname)
+                out = json.dumps({"error": str(exc)}, ensure_ascii=False)
+
+            conversation.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": tc.id,
+                    "content": out,
                 }
             )
-            continue
-
-        assistant_text = "".join(assistant_text_parts).strip()
-        if assistant_text:
-            return assistant_text, tools_were_used
-        return "(Sin contenido de texto en la respuesta.)", tools_were_used
 
     return (
-        "No pude completar la accion solicitada tras varios intentos de herramientas.",
+        "Alcanzado el límite de pasadas de herramientas sin respuesta final.",
         tools_were_used,
     )
 
@@ -834,10 +1056,11 @@ async def post_init(application: Application) -> None:
     await init_db(engine)
     application.bot_data["engine"] = engine
     application.bot_data["session_factory"] = session_factory(engine)
-    application.bot_data["anthropic"] = AsyncAnthropic(
-        api_key=os.environ["ANTHROPIC_API_KEY"],
+    application.bot_data["openai"] = AsyncOpenAI(
+        base_url="http://46.224.210.224:11434/v1",
+        api_key="ollama",
     )
-    logger.info("Base de datos lista y cliente Anthropic configurado.")
+    logger.info("Base de datos lista y cliente OpenAI-compatible (Ollama) configurado.")
 
 
 async def post_shutdown(application: Application) -> None:
@@ -861,7 +1084,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     session_factory_: async_sessionmaker[AsyncSession] = context.application.bot_data[
         "session_factory"
     ]
-    client: AsyncAnthropic = context.application.bot_data["anthropic"]
+    client: AsyncOpenAI = context.application.bot_data["openai"]
 
     await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
 
@@ -889,7 +1112,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
         dashboard_data = "{}"
         logger.info("Contexto Atlas (precarga): %s", ctx)
-        logger.info("Historial Claude: limit=%s (mensajes=%d)", history_limit, len(api_messages))
+        logger.info("Historial chat: limit=%s (mensajes=%d)", history_limit, len(api_messages))
 
         try:
             if ctx == "full":
@@ -912,7 +1135,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
         try:
             complexity = classify_message(text)
-            model = HAIKU_MODEL if complexity == "simple" else SONNET_MODEL
+            model = MODEL
             logger.info("Clasificacion de mensaje: %s (modelo: %s)", complexity, model)
             logger.info("Modelo elegido: %s para: %s", model, text[:50])
             assistant_text, tools_used = await generate_with_tools(
@@ -922,7 +1145,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 api_messages=api_messages,
             )
         except Exception:
-            logger.exception("Error al llamar a la API de Anthropic")
+            logger.exception("Error al llamar a la API de Ollama (OpenAI-compatible)")
             await update.message.reply_text(
                 "No pude obtener respuesta del asistente ahora mismo. "
                 "Inténtalo de nuevo en unos segundos."
@@ -954,7 +1177,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 def main() -> None:
     required = (
         "TELEGRAM_BOT_TOKEN",
-        "ANTHROPIC_API_KEY",
         "DATABASE_URL",
         "ATLAS_VITAL_URL",
         "ASSISTANT_API_KEY",
