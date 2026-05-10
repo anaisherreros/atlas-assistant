@@ -6,7 +6,7 @@ import json
 import re
 from typing import Any
 
-from openai import AsyncOpenAI
+from anthropic import AsyncAnthropic
 from dotenv import load_dotenv
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -72,7 +72,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-MODEL = "qwen2.5:14b"
+MODEL = "claude-sonnet-4-5"
 MAX_HISTORY_MESSAGES = 20
 TELEGRAM_MAX_MESSAGE_LENGTH = 4096
 MAX_TOOL_LOOPS = 12
@@ -85,20 +85,17 @@ def _tool(
     required: list[str] | None = None,
 ) -> dict[str, Any]:
     return {
-        "type": "function",
-        "function": {
-            "name": name,
-            "description": description,
-            "parameters": {
-                "type": "object",
-                "properties": properties,
-                "required": required or [],
-            },
+        "name": name,
+        "description": description,
+        "input_schema": {
+            "type": "object",
+            "properties": properties,
+            "required": required or [],
         },
     }
 
 
-ATLAS_OPENAI_TOOLS: list[dict[str, Any]] = [
+ATLAS_TOOLS: list[dict[str, Any]] = [
     _tool(
         "get_today",
         "Obtiene tareas y hábitos de hoy en Atlas Vital.",
@@ -464,7 +461,7 @@ def build_system_prompt(dashboard_data: str) -> str:
         "Eres su mano derecha, directa y práctica.\n\n"
         "CONTEXTO ACTUAL DE SU VIDA (datos reales de Atlas Vital, incluidos en este mensaje):\n"
         f"{dashboard_data}\n\n"
-        "Usa estos datos como base, pero las herramientas (function calling) te permiten "
+        "Usa estos datos como base, pero las herramientas (tool use de Anthropic) te permiten "
         "leer y modificar Atlas Vital en tiempo real.\n"
         "Cuando el usuario pida crear, actualizar, borrar o consultar datos concretos, "
         "usa la herramienta adecuada, ejecuta y confirma con precisión qué ocurrió.\n\n"
@@ -762,7 +759,7 @@ def _omit_keys(data: dict[str, Any], *keys: str) -> dict[str, Any]:
 
 
 async def dispatch_atlas_tool(name: str, raw: dict[str, Any]) -> Any:
-    """Ejecuta una herramienta Atlas según el nombre OpenAI y los argumentos JSON."""
+    """Ejecuta una herramienta Atlas según nombre e input JSON del modelo."""
     args = dict(raw)
 
     if name == "get_today":
@@ -956,93 +953,104 @@ async def dispatch_atlas_tool(name: str, raw: dict[str, Any]) -> Any:
     raise ValueError(f"Herramienta no reconocida: {name}")
 
 
+def _serialize_assistant_content(content: list[Any]) -> list[dict[str, Any]]:
+    blocks: list[dict[str, Any]] = []
+    for block in content:
+        block_type = getattr(block, "type", None)
+        if block_type == "text":
+            blocks.append({"type": "text", "text": block.text})
+        elif block_type == "tool_use":
+            blocks.append(
+                {
+                    "type": "tool_use",
+                    "id": block.id,
+                    "name": block.name,
+                    "input": block.input,
+                }
+            )
+    return blocks
+
+
 async def generate_with_tools(
-    client: AsyncOpenAI,
+    client: AsyncAnthropic,
     *,
     model: str,
     system_prompt: str,
     api_messages: list[dict[str, Any]],
 ) -> tuple[str, bool]:
-    conversation: list[dict[str, Any]] = [
-        {"role": "system", "content": system_prompt},
-        *api_messages,
-    ]
+    conversation_messages: list[dict[str, Any]] = list(api_messages)
     tools_were_used = False
 
     for loop_idx in range(MAX_TOOL_LOOPS):
         logger.info(
-            "Llamada modelo [%s] con %d mensajes (tools habilitadas)",
+            "Llamada Claude [%s] con %d mensajes (tools habilitadas)",
             loop_idx + 1,
-            len(conversation),
+            len(conversation_messages),
         )
-        response = await client.chat.completions.create(
+        response = await client.messages.create(
             model=model,
-            messages=conversation,
-            tools=ATLAS_OPENAI_TOOLS,
-            tool_choice="auto",
             max_tokens=8192,
+            system=system_prompt,
+            tools=ATLAS_TOOLS,
+            messages=conversation_messages,
         )
-        usage = response.usage
-        if usage is not None:
-            logger.info(
-                "Tokens - prompt: %s completion: %s",
-                usage.prompt_tokens,
-                usage.completion_tokens,
-            )
+        logger.info(
+            "Tokens - input: %s output: %s",
+            response.usage.input_tokens,
+            response.usage.output_tokens,
+        )
+        logger.info("Stop reason: %s", response.stop_reason)
 
-        choice = response.choices[0]
-        msg = choice.message
-        finish = choice.finish_reason
-        logger.info("Finish reason: %s", finish)
+        assistant_text_parts: list[str] = []
+        assistant_content = _serialize_assistant_content(list(response.content))
+        tool_result_blocks: list[dict[str, Any]] = []
 
-        if not msg.tool_calls:
-            text = (msg.content or "").strip()
-            return (
-                text or "(Sin contenido de texto en la respuesta.)",
-                tools_were_used,
-            )
+        for block in response.content:
+            if block.type == "text":
+                assistant_text_parts.append(block.text)
+                continue
+            if block.type != "tool_use":
+                continue
 
-        tools_were_used = True
-        assistant_entry: dict[str, Any] = {
-            "role": "assistant",
-            "content": msg.content,
-            "tool_calls": [
-                {
-                    "id": tc.id,
-                    "type": "function",
-                    "function": {
-                        "name": tc.function.name,
-                        "arguments": tc.function.arguments or "{}",
-                    },
-                }
-                for tc in msg.tool_calls
-            ],
-        }
-        conversation.append(assistant_entry)
+            tools_were_used = True
+            tool_input = block.input if isinstance(block.input, dict) else {}
+            logger.info("Ejecutando tool: %s con input: %s", block.name, tool_input)
 
-        for tc in msg.tool_calls:
-            fname = tc.function.name
-            raw_args = tc.function.arguments or "{}"
             try:
-                parsed: dict[str, Any] = json.loads(raw_args)
-            except json.JSONDecodeError:
-                logger.warning("JSON inválido en tool %s: %s", fname, raw_args)
-                parsed = {}
-            logger.info("Ejecutando tool %s con %s", fname, parsed)
-            try:
-                result = await dispatch_atlas_tool(fname, parsed)
-                out = json.dumps(result, ensure_ascii=False)
+                result = await dispatch_atlas_tool(block.name, tool_input)
+                logger.info("Resultado de tool %s: %s", block.name, result)
+                tool_result_blocks.append(
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": block.id,
+                        "content": json.dumps(result, ensure_ascii=False),
+                    }
+                )
             except Exception as exc:
-                logger.exception("Error en tool %s", fname)
-                out = json.dumps({"error": str(exc)}, ensure_ascii=False)
+                logger.exception("Error ejecutando tool de Atlas Vital: %s", block.name)
+                tool_result_blocks.append(
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": block.id,
+                        "content": f"Error al ejecutar {block.name}: {exc}",
+                        "is_error": True,
+                    }
+                )
 
-            conversation.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": tc.id,
-                    "content": out,
-                }
+        conversation_messages.append(
+            {"role": "assistant", "content": assistant_content}
+        )
+
+        if tool_result_blocks:
+            conversation_messages.append(
+                {"role": "user", "content": tool_result_blocks}
             )
+            continue
+
+        assistant_text = "".join(assistant_text_parts).strip()
+        if assistant_text:
+            return assistant_text, tools_were_used
+        return "(Sin contenido de texto en la respuesta.)", tools_were_used
 
     return (
         "Alcanzado el límite de pasadas de herramientas sin respuesta final.",
@@ -1056,11 +1064,10 @@ async def post_init(application: Application) -> None:
     await init_db(engine)
     application.bot_data["engine"] = engine
     application.bot_data["session_factory"] = session_factory(engine)
-    application.bot_data["openai"] = AsyncOpenAI(
-        base_url="http://46.224.210.224:11434/v1",
-        api_key="ollama",
+    application.bot_data["anthropic"] = AsyncAnthropic(
+        api_key=os.environ["ANTHROPIC_API_KEY"],
     )
-    logger.info("Base de datos lista y cliente OpenAI-compatible (Ollama) configurado.")
+    logger.info("Base de datos lista y cliente Anthropic configurado.")
 
 
 async def post_shutdown(application: Application) -> None:
@@ -1084,7 +1091,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     session_factory_: async_sessionmaker[AsyncSession] = context.application.bot_data[
         "session_factory"
     ]
-    client: AsyncOpenAI = context.application.bot_data["openai"]
+    client: AsyncAnthropic = context.application.bot_data["anthropic"]
 
     await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
 
@@ -1145,7 +1152,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 api_messages=api_messages,
             )
         except Exception:
-            logger.exception("Error al llamar a la API de Ollama (OpenAI-compatible)")
+            logger.exception("Error al llamar a la API de Anthropic")
             await update.message.reply_text(
                 "No pude obtener respuesta del asistente ahora mismo. "
                 "Inténtalo de nuevo en unos segundos."
@@ -1177,6 +1184,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 def main() -> None:
     required = (
         "TELEGRAM_BOT_TOKEN",
+        "ANTHROPIC_API_KEY",
         "DATABASE_URL",
         "ATLAS_VITAL_URL",
         "ASSISTANT_API_KEY",
