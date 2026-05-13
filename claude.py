@@ -35,10 +35,12 @@ async def generate_with_tools(
     model: str,
     system_prompt: str,
     api_messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]] | None = None,
     max_tool_loops: int = 12,
 ) -> tuple[str, bool]:
     conversation_messages: list[dict[str, Any]] = list(api_messages)
     tools_were_used = False
+    available_tools = ATLAS_TOOLS if tools is None else tools
 
     for loop_idx in range(max_tool_loops):
         logger.info(
@@ -50,7 +52,7 @@ async def generate_with_tools(
             model=model,
             max_tokens=8192,
             system=system_prompt,
-            tools=ATLAS_TOOLS,
+            tools=available_tools,
             messages=conversation_messages,
         )
         logger.info(

@@ -119,6 +119,15 @@ def messages_to_anthropic(
     return [{"role": r.role, "content": r.content} for r in rows]
 
 
+async def fetch_known_chat_ids(
+    session: AsyncSession,
+) -> list[int]:
+    stmt = select(ChatSession.telegram_chat_id).order_by(ChatSession.telegram_chat_id.asc())
+    result = await session.execute(stmt)
+    chat_ids = [chat_id for chat_id in result.scalars().all() if isinstance(chat_id, int) and chat_id > 0]
+    return chat_ids
+
+
 async def get_active_agent(
     session: AsyncSession,
     *,
@@ -132,6 +141,27 @@ async def get_active_agent(
     if row is None:
         return "personal"
     return row.active_agent or "personal"
+
+
+async def ensure_chat_session(
+    session: AsyncSession,
+    *,
+    telegram_chat_id: int,
+    active_agent: str = "personal",
+) -> None:
+    stmt = select(ChatSession).where(
+        ChatSession.telegram_chat_id == telegram_chat_id,
+    )
+    result = await session.execute(stmt)
+    row = result.scalar_one_or_none()
+    if row is None:
+        session.add(
+            ChatSession(
+                telegram_chat_id=telegram_chat_id,
+                active_agent=active_agent,
+            )
+        )
+        await session.commit()
 
 
 async def set_active_agent(
