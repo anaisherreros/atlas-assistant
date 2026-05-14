@@ -9,6 +9,7 @@ from typing import Any, Iterable
 
 from atlas_client import (
     complete_task,
+    create_habit,
     create_task,
     create_transaction,
     get_calendar,
@@ -151,7 +152,7 @@ def _extract_habits_from_payload(payload: Any) -> list[dict[str, Any]]:
     return _extract_items(
         habits,
         id_keys=("habit_id", "id"),
-        extra_keys=("completed", "status", "date"),
+        extra_keys=("completed", "status", "date", "start_time", "end_time"),
     )
 
 
@@ -204,18 +205,25 @@ def _format_amount(amount: float | None) -> str | None:
     return f"{amount:,.2f} EUR".replace(",", "_").replace(".", ",").replace("_", ".")
 
 
+def _format_time_window(start_time: object, end_time: object) -> str:
+    start_value = str(start_time or "").strip()
+    end_value = str(end_time or "").strip()
+    if start_value and end_value:
+        return f"{start_value}-{end_value}"
+    if start_value:
+        return start_value
+    return "-"
+
+
 def _format_task_line(item: dict[str, Any]) -> str:
     identifier = f"[{item['id']}] " if item.get("id") is not None else ""
     due_date = item.get("due_date")
-    start_time = item.get("start_time")
-    end_time = item.get("end_time")
     suffix_parts: list[str] = []
     if due_date:
         suffix_parts.append(str(due_date))
-    if start_time and end_time:
-        suffix_parts.append(f"{start_time}-{end_time}")
-    elif start_time:
-        suffix_parts.append(str(start_time))
+    time_window = _format_time_window(item.get("start_time"), item.get("end_time"))
+    if time_window != "-":
+        suffix_parts.append(time_window)
     suffix = f" ({', '.join(suffix_parts)})" if suffix_parts else ""
     return f"- {identifier}{item['title']}{suffix}"
 
@@ -225,6 +233,9 @@ def _format_habit_line(item: dict[str, Any]) -> str:
     status = item.get("status")
     completed = item.get("completed")
     marker = "x" if completed in (True, 1, "true", "True") or status == "completed" else " "
+    time_window = _format_time_window(item.get("start_time"), item.get("end_time"))
+    if time_window != "-":
+        return f"- [{marker}] {time_window} · {identifier}{item['title']}"
     return f"- [{marker}] {identifier}{item['title']}"
 
 
@@ -302,6 +313,56 @@ def _extract_date_range(text: str) -> tuple[str | None, str | None]:
     return None, None
 
 
+def _normalize_clock(hour_text: str, minute_text: str | None = None) -> str | None:
+    hour = int(hour_text)
+    minute = 0 if minute_text is None else int(minute_text)
+    if not 0 <= hour <= 23 or not 0 <= minute <= 59:
+        return None
+    return f"{hour:02d}:{minute:02d}"
+
+
+def _extract_time_range(text: str) -> tuple[str | None, str | None, tuple[int, int] | None]:
+    patterns = (
+        r"\b(?:de|desde)\s+(?:las?\s+)?(\d{1,2})(?::(\d{2}))?\s*(?:h)?\s+(?:a|hasta)\s+(?:las?\s+)?(\d{1,2})(?::(\d{2}))?\s*(?:h)?\b",
+        r"\ba\s+las?\s+(\d{1,2})(?::(\d{2}))?\s*(?:h)?\s+(?:a|hasta)\s+las?\s+(\d{1,2})(?::(\d{2}))?\s*(?:h)?\b",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if not match:
+            continue
+        start_time = _normalize_clock(match.group(1), match.group(2))
+        end_time = _normalize_clock(match.group(3), match.group(4))
+        if start_time and end_time:
+            return start_time, end_time, match.span()
+    return None, None, None
+
+
+def _extract_time_token(text: str) -> tuple[str | None, tuple[int, int] | None]:
+    patterns = (
+        r"\ba\s+las?\s+(\d{1,2})(?::(\d{2}))?\s*(?:h)?\b",
+        r"\bpara\s+las?\s+(\d{1,2})(?::(\d{2}))?\s*(?:h)?\b",
+        r"\bsobre\s+las?\s+(\d{1,2})(?::(\d{2}))?\s*(?:h)?\b",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if not match:
+            continue
+        parsed = _normalize_clock(match.group(1), match.group(2))
+        if parsed:
+            return parsed, match.span()
+    return None, None
+
+
+def _extract_time_info(
+    text: str,
+) -> tuple[str | None, str | None, tuple[int, int] | None]:
+    start_time, end_time, range_span = _extract_time_range(text)
+    if start_time:
+        return start_time, end_time, range_span
+    start_time, time_span = _extract_time_token(text)
+    return start_time, None, time_span
+
+
 def _remove_span(text: str, span: tuple[int, int] | None, *, trim_preposition: bool = False) -> str:
     if span is None:
         return text
@@ -311,6 +372,18 @@ def _remove_span(text: str, span: tuple[int, int] | None, *, trim_preposition: b
     if trim_preposition:
         prefix = re.sub(r"(?:\bpara|\bel|\bde)\s*$", "", prefix, flags=re.IGNORECASE)
     return _collapse_spaces(f"{prefix} {suffix}")
+
+
+def _remove_spans(text: str, span_specs: list[tuple[tuple[int, int] | None, bool]]) -> str:
+    cleaned = text
+    sortable_specs = [spec for spec in span_specs if spec[0] is not None]
+    for span, trim_preposition in sorted(
+        sortable_specs,
+        key=lambda spec: spec[0][0],  # type: ignore[index]
+        reverse=True,
+    ):
+        cleaned = _remove_span(cleaned, span, trim_preposition=trim_preposition)
+    return _collapse_spaces(cleaned)
 
 
 def _extract_priority(text: str) -> tuple[str | None, tuple[int, int] | None]:
@@ -344,6 +417,19 @@ def _match_create_task(normalized: str) -> bool:
     )
 
 
+def _match_help_query(normalized: str) -> bool:
+    return normalized in {
+        "ayuda",
+        "help",
+        "comandos",
+        "ejemplos",
+        "que puedes hacer",
+        "qué puedes hacer",
+        "como te hablo",
+        "cómo te hablo",
+    }
+
+
 def _match_complete_task(normalized: str) -> bool:
     return any(
         normalized.startswith(prefix)
@@ -351,6 +437,22 @@ def _match_complete_task(normalized: str) -> bool:
             "completa tarea",
             "marca tarea",
             "check tarea",
+        )
+    )
+
+
+def _match_create_habit(normalized: str) -> bool:
+    return any(
+        normalized.startswith(prefix)
+        for prefix in (
+            "crea un habito",
+            "crea una rutina",
+            "crea habito",
+            "crea hábito",
+            "nuevo habito",
+            "nuevo hábito",
+            "apunta habito",
+            "apunta hábito",
         )
     )
 
@@ -484,6 +586,19 @@ def _resolve_item_by_reference(
     return None, f"No encontré ningún {noun} que encaje con \"{cleaned}\"."
 
 
+def _extract_frequency(text: str) -> tuple[str | None, tuple[int, int] | None]:
+    patterns = (
+        ("daily", r"\b(diario|diaria|cada\s+dia|cada\s+día|todos?\s+los\s+dias|todos?\s+los\s+días)\b"),
+        ("weekly", r"\b(semanal|cada\s+semana)\b"),
+        ("monthly", r"\b(mensual|cada\s+mes)\b"),
+    )
+    for frequency, pattern in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            return frequency, match.span()
+    return None, None
+
+
 def _parse_create_task(text: str) -> tuple[dict[str, Any] | None, str | None]:
     remainder = _strip_command_prefix(
         text,
@@ -496,12 +611,19 @@ def _parse_create_task(text: str) -> tuple[dict[str, Any] | None, str | None]:
     )
     due_date, date_span = _extract_date_token(remainder)
     priority, priority_span = _extract_priority(remainder)
+    start_time, end_time, time_span = _extract_time_info(remainder)
 
-    title = remainder
-    title = _remove_span(title, date_span, trim_preposition=True)
-    title = _remove_span(title, priority_span)
-    title = _collapse_spaces(title)
+    title = _remove_spans(
+        remainder,
+        [
+            (date_span, True),
+            (priority_span, False),
+            (time_span, True),
+        ],
+    )
 
+    if due_date is None and start_time:
+        due_date = _today().isoformat()
     if not due_date:
         return None, "Para crear la tarea necesito una fecha clara, por ejemplo hoy, mañana o 2026-05-20."
     if not title:
@@ -510,6 +632,53 @@ def _parse_create_task(text: str) -> tuple[dict[str, Any] | None, str | None]:
     payload: dict[str, Any] = {"title": title, "due_date": due_date}
     if priority:
         payload["priority"] = priority
+    if start_time:
+        payload["start_time"] = start_time
+    if end_time:
+        payload["end_time"] = end_time
+    return payload, None
+
+
+def _parse_create_habit(text: str) -> tuple[dict[str, Any] | None, str | None]:
+    remainder = _strip_command_prefix(
+        text,
+        (
+            r"^crea\s+un\s+habito\s+",
+            r"^crea\s+un\s+hábito\s+",
+            r"^crea\s+una\s+rutina\s+",
+            r"^crea\s+habito\s+",
+            r"^crea\s+hábito\s+",
+            r"^nuevo\s+habito\s+",
+            r"^nuevo\s+hábito\s+",
+            r"^apunta\s+habito\s+",
+            r"^apunta\s+hábito\s+",
+        ),
+    )
+    start_date, date_span = _extract_date_token(remainder)
+    frequency_type, frequency_span = _extract_frequency(remainder)
+    start_time, end_time, time_span = _extract_time_info(remainder)
+
+    title = _remove_spans(
+        remainder,
+        [
+            (date_span, True),
+            (frequency_span, False),
+            (time_span, True),
+        ],
+    )
+
+    if not title:
+        return None, "Para crear el hábito necesito también un título."
+
+    payload: dict[str, Any] = {
+        "title": title,
+        "start_date": start_date or _today().isoformat(),
+        "frequency_type": frequency_type or "daily",
+    }
+    if start_time:
+        payload["start_time"] = start_time
+    if end_time:
+        payload["end_time"] = end_time
     return payload, None
 
 
@@ -531,10 +700,13 @@ def _parse_create_transaction(text: str) -> tuple[dict[str, Any] | None, str | N
     if tx_date is None:
         tx_date = _today().isoformat()
 
-    description = remainder
-    description = _remove_span(description, amount_span)
-    description = _remove_span(description, date_span, trim_preposition=True)
-    description = _collapse_spaces(description)
+    description = _remove_spans(
+        remainder,
+        [
+            (amount_span, False),
+            (date_span, True),
+        ],
+    )
     description = re.sub(r"^(?:de|en)\s+", "", description, flags=re.IGNORECASE)
     if not description:
         return None, "Para registrar el movimiento necesito una descripción, por ejemplo gasolina o supermercado."
@@ -545,6 +717,35 @@ def _parse_create_transaction(text: str) -> tuple[dict[str, Any] | None, str | N
         "transaction_type": transaction_type,
         "date": tx_date,
     }, None
+
+
+async def _handle_help_query() -> DeterministicResult | None:
+    lines = [
+        "Puedo ayudarte con estos comandos rápidos:",
+        "",
+        "Tareas:",
+        "- crea tarea llamar al dentista mañana a las 15:30",
+        "- crea tarea bloque de foco mañana de 15 a 16 prioridad alta",
+        "- completa tarea informe",
+        "",
+        "Hábitos:",
+        "- crea habito caminar diario a las 08:00",
+        "- crea habito leer desde las 21 hasta las 22",
+        "- marca hábito beber agua",
+        "",
+        "Dinero:",
+        "- registra gasto gasolina 45 hoy",
+        "- apunta ingreso nomina 2200",
+        "",
+        "Consultas:",
+        "- qué tengo hoy",
+        "- mis tareas",
+        "- calendario entre 2026-05-14 y 2026-05-20",
+        "- gastos del mes",
+        "",
+        "Consejo rápido: usa fecha como hoy, mañana o 2026-05-20 y hora como 08:00 o de 15 a 16.",
+    ]
+    return DeterministicResult("\n".join(lines))
 
 
 async def _handle_today_query() -> DeterministicResult | None:
@@ -650,12 +851,31 @@ async def _handle_create_task(text: str) -> DeterministicResult | None:
     assert payload is not None
     created = await create_task(**payload)
     priority = payload.get("priority", "medium")
+    schedule = _format_time_window(payload.get("start_time"), payload.get("end_time"))
     return DeterministicResult(
         "Tarea creada:\n"
         f"- Título: {payload['title']}\n"
         f"- Fecha: {payload['due_date']}\n"
+        f"- Hora: {schedule}\n"
         f"- Prioridad: {priority}\n"
         f"- Respuesta Atlas: {_json_excerpt(created, max_len=220)}"
+    )
+
+
+async def _handle_create_habit(text: str) -> DeterministicResult | None:
+    payload, error = _parse_create_habit(text)
+    if error:
+        return DeterministicResult(error)
+    assert payload is not None
+    result = await create_habit(**payload)
+    schedule = _format_time_window(payload.get("start_time"), payload.get("end_time"))
+    return DeterministicResult(
+        "Hábito creado:\n"
+        f"- Título: {payload['title']}\n"
+        f"- Inicio: {payload['start_date']}\n"
+        f"- Frecuencia: {payload['frequency_type']}\n"
+        f"- Hora: {schedule}\n"
+        f"- Respuesta Atlas: {_json_excerpt(result, max_len=220)}"
     )
 
 
@@ -723,9 +943,15 @@ async def try_handle_deterministic_message(text: str) -> DeterministicResult | N
     if not normalized:
         return None
 
+    if _match_help_query(normalized):
+        logger.info("Ruta determinista: help")
+        return await _handle_help_query()
     if _match_create_task(normalized):
         logger.info("Ruta determinista: create_task")
         return await _handle_create_task(text)
+    if _match_create_habit(normalized):
+        logger.info("Ruta determinista: create_habit")
+        return await _handle_create_habit(text)
     if _match_complete_task(normalized):
         logger.info("Ruta determinista: complete_task")
         return await _handle_complete_task(text)

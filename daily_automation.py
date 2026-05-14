@@ -65,16 +65,29 @@ def _sort_tasks(tasks: list[dict[str, object]]) -> list[dict[str, object]]:
     return sorted(tasks, key=sort_key)
 
 
+def _sort_habits(habits: list[dict[str, object]]) -> list[dict[str, object]]:
+    def sort_key(habit: dict[str, object]) -> tuple[int, str, str]:
+        start_time = str(habit.get("start_time") or "")
+        has_time = 0 if start_time else 1
+        return (has_time, start_time, str(habit.get("title") or ""))
+
+    return sorted(habits, key=sort_key)
+
+
+def _format_time_window(start_time: object, end_time: object) -> str:
+    start_value = str(start_time or "").strip()
+    end_value = str(end_time or "").strip()
+    if start_value and end_value:
+        return f"{start_value}-{end_value}"
+    if start_value:
+        return start_value
+    return ""
+
+
 def _format_task_line(task: dict[str, object]) -> str:
     task_id = task.get("id")
     title = str(task.get("title") or "Sin titulo")
-    start_time = str(task.get("start_time") or "").strip()
-    end_time = str(task.get("end_time") or "").strip()
-    time_block = ""
-    if start_time and end_time:
-        time_block = f"{start_time}-{end_time}"
-    elif start_time:
-        time_block = start_time
+    time_block = _format_time_window(task.get("start_time"), task.get("end_time"))
     id_block = f"[{task_id}] " if task_id is not None else ""
     if time_block:
         return f"- {time_block} · {id_block}{title}"
@@ -89,6 +102,9 @@ def _format_habit_line(habit: dict[str, object]) -> str:
     is_done = completed in (True, 1, "true", "True") or status == "completed"
     marker = "x" if is_done else " "
     id_block = f"[{habit_id}] " if habit_id is not None else ""
+    time_block = _format_time_window(habit.get("start_time"), habit.get("end_time"))
+    if time_block:
+        return f"- [{marker}] {time_block} · {id_block}{title}"
     return f"- [{marker}] {id_block}{title}"
 
 
@@ -121,7 +137,7 @@ def _is_review_done_today(review_payload: object, today_iso: str) -> bool:
 
 def _build_morning_message(today_payload: object) -> str:
     tasks = _sort_tasks(_extract_tasks_from_payload(today_payload))
-    habits = _extract_habits_from_payload(today_payload)
+    habits = _sort_habits(_extract_habits_from_payload(today_payload))
 
     timed_tasks = [task for task in tasks if task.get("start_time")]
     untimed_tasks = [task for task in tasks if not task.get("start_time")]
@@ -160,7 +176,7 @@ def _build_morning_message(today_payload: object) -> str:
 
 def _build_night_message(today_payload: object, *, review_done: bool, review_url: str) -> str:
     tasks = _extract_tasks_from_payload(today_payload)
-    habits = _extract_habits_from_payload(today_payload)
+    habits = _sort_habits(_extract_habits_from_payload(today_payload))
 
     completed_tasks = [
         task

@@ -200,6 +200,8 @@ ATLAS_TOOLS: list[dict[str, Any]] = [
         {
             "title": {"type": "string"},
             "start_date": {"type": "string"},
+            "start_time": {"type": "string", "description": "HH:MM"},
+            "end_time": {"type": "string", "description": "HH:MM"},
             "frequency_type": {
                 "type": "string",
                 "enum": ["daily", "weekly", "monthly"],
@@ -224,6 +226,8 @@ ATLAS_TOOLS: list[dict[str, Any]] = [
             "frequency_type": {"type": "string"},
             "start_date": {"type": "string"},
             "target_end_date": {"type": "string"},
+            "start_time": {"type": "string"},
+            "end_time": {"type": "string"},
         },
         ["habit_id"],
     ),
@@ -488,6 +492,10 @@ async def dispatch_atlas_tool(name: str, raw: dict[str, Any]) -> Any:
             extra["times_per_period"] = args["times_per_period"]
         if args.get("weekdays") is not None:
             extra["weekdays"] = args["weekdays"]
+        if args.get("start_time") is not None:
+            extra["start_time"] = args["start_time"]
+        if args.get("end_time") is not None:
+            extra["end_time"] = args["end_time"]
         return await create_habit(
             title=args["title"],
             start_date=args["start_date"],
