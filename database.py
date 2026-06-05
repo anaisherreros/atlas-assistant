@@ -143,10 +143,30 @@ async def fetch_known_chat_ids(
     return chat_ids
 
 
+MEMORY_UPDATE_EVERY_USER_MESSAGES = 20
+
+
 def should_update_memory(message_count: int) -> bool:
     if message_count <= 0:
         return False
-    return message_count % 20 == 0
+    return message_count % MEMORY_UPDATE_EVERY_USER_MESSAGES == 0
+
+
+async def count_user_messages(
+    session: AsyncSession,
+    *,
+    telegram_chat_id: int,
+) -> int:
+    stmt = (
+        select(func.count())
+        .select_from(ChatMessage)
+        .where(
+            ChatMessage.telegram_chat_id == telegram_chat_id,
+            ChatMessage.role == "user",
+        )
+    )
+    result = await session.execute(stmt)
+    return int(result.scalar_one() or 0)
 
 
 async def get_memory(
@@ -167,6 +187,7 @@ async def save_memory(
     telegram_chat_id: int,
     summary: str,
     key_facts: str = "{}",
+    user_message_count: int = 0,
 ) -> ConversationMemory:
     memory = await get_memory(session, telegram_chat_id=telegram_chat_id)
     if memory is None:
@@ -174,13 +195,13 @@ async def save_memory(
             telegram_chat_id=telegram_chat_id,
             summary=summary,
             key_facts=key_facts,
-            messages_count=0,
+            messages_count=user_message_count,
         )
         session.add(memory)
     else:
         memory.summary = summary
         memory.key_facts = key_facts
-        memory.messages_count = 0
+        memory.messages_count = user_message_count
     await session.commit()
     await session.refresh(memory)
     return memory
@@ -192,6 +213,7 @@ async def update_memory(
     telegram_chat_id: int,
     new_info: str,
     key_facts: str = "{}",
+    user_message_count: int = 0,
 ) -> ConversationMemory:
     memory = await get_memory(session, telegram_chat_id=telegram_chat_id)
     if memory is None:
@@ -199,37 +221,16 @@ async def update_memory(
             telegram_chat_id=telegram_chat_id,
             summary=new_info,
             key_facts=key_facts,
-            messages_count=0,
+            messages_count=user_message_count,
         )
         session.add(memory)
     else:
         memory.summary = new_info
         memory.key_facts = key_facts
-        memory.messages_count = 0
+        memory.messages_count = user_message_count
     await session.commit()
     await session.refresh(memory)
     return memory
-
-
-async def increment_memory_counter(
-    session: AsyncSession,
-    *,
-    telegram_chat_id: int,
-) -> int:
-    memory = await get_memory(session, telegram_chat_id=telegram_chat_id)
-    if memory is None:
-        memory = ConversationMemory(
-            telegram_chat_id=telegram_chat_id,
-            summary="",
-            key_facts="{}",
-            messages_count=1,
-        )
-        session.add(memory)
-    else:
-        memory.messages_count += 1
-    await session.commit()
-    await session.refresh(memory)
-    return memory.messages_count
 
 
 async def get_active_agent(
