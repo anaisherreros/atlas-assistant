@@ -8,7 +8,7 @@ from anthropic import AsyncAnthropic
 
 logger = logging.getLogger(__name__)
 
-_MCP_URL = os.environ.get("ATLAS_VITAL_URL", "").rstrip("/") + "/mcp/sse"
+_MCP_URL = os.environ.get("ATLAS_VITAL_URL", "").rstrip("/") + "/mcp"
 _MCP_TOKEN = os.environ.get("ASSISTANT_API_KEY", "")
 
 _MCP_SERVERS = [
