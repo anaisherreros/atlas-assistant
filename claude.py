@@ -17,6 +17,9 @@ logger = logging.getLogger(__name__)
 WRITE_TOOLS = frozenset({
     "log_habit_completion",
     "log_health",
+    "log_weight",
+    "log_body_measurement",
+    "update_health",
     "log_exercise",
     "create_transaction",
     "create_task",
@@ -142,6 +145,9 @@ def _build_write_confirmation(outcome: _WriteToolOutcome) -> str:
     labels = {
         "log_habit_completion": ("marcar el hábito", "hábito"),
         "log_health": ("registrar salud", "salud"),
+        "log_weight": ("registrar el peso", "peso"),
+        "log_body_measurement": ("registrar medidas corporales", "medición"),
+        "update_health": ("actualizar salud", "salud"),
         "log_exercise": ("registrar ejercicio", "ejercicio"),
         "create_transaction": ("registrar el movimiento", "movimiento"),
         "create_task": ("crear la tarea", "tarea"),
@@ -198,7 +204,37 @@ def _build_write_confirmation(outcome: _WriteToolOutcome) -> str:
             if payload.get(key)
         ]
         scope = ", ".join(parts) if parts else "salud"
+        physical = payload.get("physical_log") if isinstance(payload.get("physical_log"), dict) else {}
+        weight = physical.get("weight_kg")
+        if weight is not None:
+            return f"✅ Peso registrado · {weight} kg · {date_label}"
         return f"✅ Salud registrada · {date_label} ({scope})"
+
+    if name == "log_weight":
+        date_label = _format_date_label(inp.get("date"))
+        physical = payload.get("physical_log") if isinstance(payload.get("physical_log"), dict) else {}
+        weight = physical.get("weight_kg") or inp.get("weight_kg")
+        return f"✅ Peso registrado · {weight} kg · {date_label}"
+
+    if name == "log_body_measurement":
+        measurement = payload.get("body_measurement") if isinstance(payload.get("body_measurement"), dict) else {}
+        date_label = _format_date_label(measurement.get("date") or inp.get("date"))
+        weight = measurement.get("weight_kg") or inp.get("weight_kg")
+        waist = measurement.get("waist_cm") or inp.get("waist_cm")
+        details = []
+        if weight is not None:
+            details.append(f"{weight} kg")
+        if waist is not None:
+            details.append(f"cintura {waist} cm")
+        summary = " · ".join(details) if details else "medidas guardadas"
+        return f"✅ Medición corporal · {summary} · {date_label}"
+
+    if name == "update_health":
+        date_label = _format_date_label(payload.get("date") or inp.get("date"))
+        physical = payload.get("physical_log") if isinstance(payload.get("physical_log"), dict) else {}
+        if physical.get("weight_kg") is not None:
+            return f"✅ Peso actualizado · {physical['weight_kg']} kg · {date_label}"
+        return f"✅ Salud actualizada · {date_label}"
 
     if name == "log_exercise":
         log = payload.get("exercise_log") if isinstance(payload.get("exercise_log"), dict) else {}

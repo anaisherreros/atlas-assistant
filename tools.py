@@ -8,11 +8,13 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from finance_categories import resolve_finance_category_id
+from health_helpers import normalize_body_measurement_payload, normalize_physical_payload
 from atlas_client import (
     _post,
     apply_day_template,
     complete_task,
     create_daily_review,
+    create_body_measurement,
     create_desire,
     create_goal,
     create_habit,
@@ -30,6 +32,7 @@ from atlas_client import (
     get_all_desires_full,
     get_applied_day_template,
     get_areas_full,
+    get_body_measurement_latest,
     get_calendar,
     get_dashboard,
     get_desire_structure,
@@ -450,23 +453,65 @@ ATLAS_TOOLS: list[dict[str, Any]] = [
     ),
     _tool(
         "log_health",
-        "Registra datos de salud (objetos physical/emotional/mental como en Atlas).",
+        "Registra salud del día. physical usa weight_kg, sleep_hours; emotional mood+energy_level; mental stress+mental_clarity.",
         {
-            "date": {"type": "string"},
-            "physical": {"type": "object", "description": "Opcional: peso, pasos, etc."},
-            "emotional": {"type": "object"},
-            "mental": {"type": "object"},
+            "date": {"type": "string", "description": "YYYY-MM-DD; omitir = hoy"},
+            "physical": {
+                "type": "object",
+                "description": "Ej: {weight_kg: 95.0, sleep_hours: 7.5, note: ''}",
+            },
+            "emotional": {
+                "type": "object",
+                "description": "Requiere mood (1-5) y energy_level (1-10)",
+            },
+            "mental": {
+                "type": "object",
+                "description": "Requiere stress_level (1-10) y mental_clarity (1-10)",
+            },
         },
-        ["date"],
+        [],
+    ),
+    _tool(
+        "log_weight",
+        "Registra el peso corporal (kg) de hoy o de una fecha.",
+        {
+            "weight_kg": {"type": "number"},
+            "date": {"type": "string", "description": "YYYY-MM-DD; omitir = hoy (Zurich)"},
+            "note": {"type": "string"},
+        },
+        ["weight_kg"],
+    ),
+    _tool(
+        "log_body_measurement",
+        "Registra medidas corporales (peso, grasa, cintura, etc.) en Atlas Vital.",
+        {
+            "date": {"type": "string", "description": "YYYY-MM-DD; omitir = hoy"},
+            "weight_kg": {"type": "number"},
+            "body_fat_pct": {"type": "number"},
+            "water_pct": {"type": "number"},
+            "muscle_mass_kg": {"type": "number"},
+            "waist_cm": {"type": "number"},
+            "hip_cm": {"type": "number"},
+            "chest_cm": {"type": "number"},
+            "abdomen_cm": {"type": "number"},
+            "note": {"type": "string"},
+        },
+        [],
+    ),
+    _tool(
+        "get_body_measurement_latest",
+        "Obtiene la última medición corporal registrada.",
+        {},
+        [],
     ),
     _tool(
         "update_health",
-        "Actualiza puntuaciones simples de salud para una fecha.",
+        "Actualiza/upsertea salud de una fecha (mismos campos que log_health).",
         {
             "date": {"type": "string"},
-            "physical": {"type": "integer"},
-            "emotional": {"type": "integer"},
-            "mental": {"type": "integer"},
+            "physical": {"type": "object"},
+            "emotional": {"type": "object"},
+            "mental": {"type": "object"},
         },
         ["date"],
     ),
@@ -709,16 +754,37 @@ async def dispatch_atlas_tool(name: str, raw: dict[str, Any]) -> Any:
         return await delete_task(int(args["task_id"]))
 
     if name == "log_health":
+        log_date = _normalize_habit_log_date(args.get("date"))
         return await log_health(
-            date=args["date"],
-            physical=args.get("physical"),
+            date=log_date,
+            physical=normalize_physical_payload(args.get("physical")),
             emotional=args.get("emotional"),
             mental=args.get("mental"),
         )
+    if name == "log_weight":
+        log_date = _normalize_habit_log_date(args.get("date"))
+        physical = normalize_physical_payload(
+            {
+                "weight_kg": args["weight_kg"],
+                "note": args.get("note", ""),
+            }
+        )
+        return await update_health(date=log_date, physical=physical)
+    if name == "log_body_measurement":
+        log_date = _normalize_habit_log_date(args.get("date"))
+        fields = normalize_body_measurement_payload(args)
+        if args.get("note"):
+            fields["note"] = args["note"]
+        if not fields:
+            raise ValueError("Indica al menos una medida (weight_kg, waist_cm, body_fat_pct, etc.).")
+        return await create_body_measurement(log_date, **fields)
+    if name == "get_body_measurement_latest":
+        return await get_body_measurement_latest()
     if name == "update_health":
+        log_date = _normalize_habit_log_date(args.get("date"))
         return await update_health(
-            date=args["date"],
-            physical=args.get("physical"),
+            date=log_date,
+            physical=normalize_physical_payload(args.get("physical")),
             emotional=args.get("emotional"),
             mental=args.get("mental"),
         )

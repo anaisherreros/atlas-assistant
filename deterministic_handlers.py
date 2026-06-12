@@ -19,8 +19,10 @@ from atlas_client import (
     get_tasks_pending,
     get_today,
     log_habit,
+    update_health,
 )
 from finance_categories import resolve_finance_category_id
+from health_helpers import extract_weight_kg_from_text
 
 logger = logging.getLogger(__name__)
 
@@ -689,6 +691,49 @@ def _match_natural_expense(normalized: str) -> bool:
     return bool(_EXPENSE_VERB_RE.search(normalized))
 
 
+def _match_log_weight(normalized: str) -> bool:
+    if not _WEIGHT_INTENT_RE.search(normalized):
+        return False
+    if not re.search(r"\d", normalized):
+        return False
+    if _is_compound_operational_message(normalized):
+        return False
+    return True
+
+
+def _parse_log_weight(text: str) -> tuple[dict[str, Any] | None, str | None]:
+    weight_kg = extract_weight_kg_from_text(text)
+    if weight_kg is None:
+        return None, "No pude identificar el peso en kg."
+
+    tx_date, _ = _extract_date_token(text)
+    if tx_date is None:
+        tx_date = _today().isoformat()
+
+    return {"date": tx_date, "weight_kg": weight_kg}, None
+
+
+async def _handle_log_weight(text: str) -> DeterministicResult | None:
+    payload, error = _parse_log_weight(text)
+    if error:
+        return DeterministicResult(error)
+    if payload is None:
+        return None
+
+    result = await update_health(
+        date=str(payload["date"]),
+        physical={"weight_kg": payload["weight_kg"]},
+    )
+    physical = result.get("physical_log") if isinstance(result, dict) else None
+    saved_weight = payload["weight_kg"]
+    if isinstance(physical, dict) and physical.get("weight_kg") is not None:
+        saved_weight = physical["weight_kg"]
+    return DeterministicResult(
+        f"Peso registrado: {saved_weight} kg · {payload['date']}\n"
+        f"Respuesta Atlas: {_json_excerpt(result, max_len=220)}"
+    )
+
+
 def _strip_command_prefix(text: str, patterns: tuple[str, ...]) -> str:
     for pattern in patterns:
         stripped = re.sub(pattern, "", text, count=1, flags=re.IGNORECASE).strip()
@@ -1217,6 +1262,9 @@ async def try_handle_deterministic_message(text: str) -> DeterministicResult | N
     if _match_mark_habit(normalized):
         logger.info("Ruta determinista: log_habit_completion")
         return await _handle_mark_habit(text)
+    if _match_log_weight(normalized):
+        logger.info("Ruta determinista: log_weight")
+        return await _handle_log_weight(text)
     if _match_create_transaction(normalized) or _match_natural_expense(normalized):
         logger.info("Ruta determinista: create_transaction")
         return await _handle_create_transaction(text)

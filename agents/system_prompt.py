@@ -42,6 +42,8 @@ def build_agent_system_prompt(agent: Agent) -> str:
         "con template_name o template_id; remove_day_template para quitarla de una fecha.\n"
         "Para create_transaction: get_finance para categories[] o pasa category_name (comida, ocio, etc.).\n"
         "Si el usuario mezcla varias acciones en un mensaje (peso + gasto + hábito), ejecuta una tool por acción.\n"
+        "Para peso: log_weight con weight_kg, o log_health/update_health con physical.weight_kg (no uses 'weight' solo).\n"
+        "Para medidas corporales (cintura, grasa, etc.): log_body_measurement.\n"
         "Para crear un objetivo (goal) necesitas el desire_id; si no lo tienes, usa "
         "get_desire_structure o get_all_desires_full primero.\n"
         "No menciones datos que no hayas obtenido con herramientas."

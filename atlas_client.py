@@ -438,16 +438,25 @@ async def log_self_relationship(
 
 async def update_health(
     date: str,
-    physical: int | None = None,
-    emotional: int | None = None,
-    mental: int | None = None,
+    physical: dict[str, Any] | None = None,
+    emotional: dict[str, Any] | None = None,
+    mental: dict[str, Any] | None = None,
 ) -> Any:
-    payload = {
-        "date": date,
-        "physical": physical,
-        "emotional": emotional,
-        "mental": mental,
-    }
+    payload: dict[str, Any] = {"date": date}
+
+    def _prune(value: Any) -> Any:
+        if value is None:
+            return None
+        if isinstance(value, dict):
+            return {k: v for k, v in value.items() if v is not None}
+        return value
+
+    if physical is not None:
+        payload["physical"] = _prune(physical)
+    if emotional is not None:
+        payload["emotional"] = _prune(emotional)
+    if mental is not None:
+        payload["mental"] = _prune(mental)
     return await _post("/api/assistant/health/update/", payload)
 
 
@@ -464,6 +473,16 @@ async def log_exercise(
         "note": note,
     }
     return await _post("/api/assistant/exercise/log/", payload)
+
+
+async def get_body_measurement_latest() -> Any:
+    return await _get("/api/assistant/body/latest/")
+
+
+async def create_body_measurement(date: str, **fields: Any) -> Any:
+    payload: dict[str, Any] = {"date": date}
+    payload.update(fields)
+    return await _post("/api/assistant/body/create/", payload)
 
 
 async def delete_transaction(transaction_id: int) -> Any:
