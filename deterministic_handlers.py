@@ -439,6 +439,115 @@ def _extract_amount(text: str) -> tuple[float | None, tuple[int, int] | None]:
         return None, None
 
 
+_EXPENSE_VERB_RE = re.compile(
+    r"\b(gaste|gast[eé]|pague|pag[eé]|compre|compr[eé]|he\s+gastado|gastado|cobr[eé]|recib[ií]|ingreso)\b",
+    re.IGNORECASE,
+)
+_WEIGHT_INTENT_RE = re.compile(
+    r"\b(pesad[oa]|peso|me\s+pese|me\s+he\s+pesado|kilos?|kg)\b",
+    re.IGNORECASE,
+)
+_HABIT_INTENT_RE = re.compile(
+    r"\b(hice|marque|marqu[eé]|complete|complet[eé]|ya\s+hice)\b",
+    re.IGNORECASE,
+)
+_CURRENCY_AMOUNT_RE = re.compile(
+    r"(-?\d+(?:[.,]\d{1,2})?)\s*(?:€|euros?|chf|fr\.?|francos?|francs?)\b",
+    re.IGNORECASE,
+)
+_CATEGORY_HINT_WORDS = frozenset({
+    "comida",
+    "ocio",
+    "transporte",
+    "salud",
+    "ropa",
+    "supermercado",
+    "restaurante",
+    "gasolina",
+    "farmacia",
+    "casa",
+    "ahorro",
+})
+
+
+def _is_weight_number_match(match: re.Match[str], text: str) -> bool:
+    tail = text[match.end() : match.end() + 12].lower()
+    return bool(re.match(r"\s*(?:kg|kilos?|kgs)\b", tail))
+
+
+def _operational_intent_keys(normalized: str) -> set[str]:
+    intents: set[str] = set()
+    if _EXPENSE_VERB_RE.search(normalized):
+        intents.add("expense")
+    if _WEIGHT_INTENT_RE.search(normalized):
+        intents.add("weight")
+    if _HABIT_INTENT_RE.search(normalized):
+        intents.add("habit")
+    return intents
+
+
+def _is_compound_operational_message(normalized: str) -> bool:
+    return len(_operational_intent_keys(normalized)) > 1
+
+
+def _extract_expense_clause(text: str) -> str | None:
+    clauses = re.split(r"\s+y\s+", text.strip(), flags=re.IGNORECASE)
+    expense_clauses = [clause.strip() for clause in clauses if _EXPENSE_VERB_RE.search(clause)]
+    if len(expense_clauses) == 1:
+        return expense_clauses[0]
+    if len(expense_clauses) > 1:
+        return None
+    if _EXPENSE_VERB_RE.search(text):
+        return text.strip()
+    return None
+
+
+def _extract_expense_amount(text: str) -> tuple[float | None, tuple[int, int] | None]:
+    for match in _CURRENCY_AMOUNT_RE.finditer(text):
+        if _is_weight_number_match(match, text):
+            continue
+        try:
+            return float(match.group(1).replace(",", ".")), match.span()
+        except ValueError:
+            continue
+
+    verb_match = _EXPENSE_VERB_RE.search(text)
+    if verb_match:
+        after_verb = text[verb_match.end() : verb_match.end() + 24]
+        amount_match = re.search(r"(-?\d+(?:[.,]\d{1,2})?)", after_verb)
+        if amount_match and not _is_weight_number_match(amount_match, after_verb):
+            start = verb_match.end() + amount_match.start()
+            end = verb_match.end() + amount_match.end()
+            try:
+                return float(amount_match.group(1).replace(",", ".")), (start, end)
+            except ValueError:
+                pass
+
+    for match in re.finditer(r"(-?\d+(?:[.,]\d{1,2})?)", text):
+        if _is_weight_number_match(match, text):
+            continue
+        try:
+            return float(match.group(1).replace(",", ".")), match.span()
+        except ValueError:
+            continue
+    return None, None
+
+
+def _extract_transaction_category_name(remainder: str) -> str | None:
+    de_match = re.search(r"\bde\s+([\w\sáéíóúñü'-]+)\s*$", remainder, flags=re.IGNORECASE)
+    if de_match:
+        return _collapse_spaces(de_match.group(1))
+
+    en_match = re.search(r"\ben\s+(?:el|la|los|las)?\s*([\w\sáéíóúñü'-]+)\s*$", remainder, flags=re.IGNORECASE)
+    if not en_match:
+        return None
+    candidate = _collapse_spaces(en_match.group(1))
+    normalized_candidate = _normalize_text(candidate)
+    if normalized_candidate in _CATEGORY_HINT_WORDS or len(candidate.split()) <= 2:
+        return candidate
+    return None
+
+
 def _match_create_task(normalized: str) -> bool:
     return any(
         normalized.startswith(prefix)
@@ -573,14 +682,11 @@ def _match_create_transaction(normalized: str) -> bool:
 def _match_natural_expense(normalized: str) -> bool:
     if _match_create_transaction(normalized):
         return False
+    if _is_compound_operational_message(normalized):
+        return False
     if not re.search(r"\d", normalized):
         return False
-    return bool(
-        re.search(
-            r"\b(gaste|gast[eé]|pague|pag[eé]|compre|compr[eé]|he\s+gastado|gastado|cobr[eé]|recib[ií]|ingreso)\b",
-            normalized,
-        )
-    )
+    return bool(_EXPENSE_VERB_RE.search(normalized))
 
 
 def _strip_command_prefix(text: str, patterns: tuple[str, ...]) -> str:
@@ -768,30 +874,31 @@ def _parse_create_transaction(text: str) -> tuple[dict[str, Any] | None, str | N
 
 def _parse_natural_transaction(text: str) -> tuple[dict[str, Any] | None, str | None]:
     normalized = _normalize_text(text)
-    if not re.search(
-        r"\b(gaste|gast[eé]|pague|pag[eé]|compre|compr[eé]|he\s+gastado|gastado|cobr[eé]|recib[ií]|ingreso)\b",
-        normalized,
-    ):
+    if not _EXPENSE_VERB_RE.search(normalized):
+        return None, None
+    if _is_compound_operational_message(normalized):
         return None, None
 
+    expense_clause = _extract_expense_clause(text)
+    if not expense_clause:
+        return None, None
+
+    clause_normalized = _normalize_text(expense_clause)
     transaction_type = "expense"
-    if re.search(r"\b(ingreso|cobre|cobr[eé]|recib[ií]|me\s+pagaron|me\s+entr[oó])\b", normalized):
+    if re.search(r"\b(ingreso|cobre|cobr[eé]|recib[ií]|me\s+pagaron|me\s+entr[oó])\b", clause_normalized):
         transaction_type = "income"
 
-    remainder = text.strip()
+    remainder = expense_clause.strip()
     tx_date, date_span = _extract_date_token(remainder)
     if tx_date is None:
         tx_date = _today().isoformat()
         date_span = None
 
-    amount, amount_span = _extract_amount(remainder)
+    amount, amount_span = _extract_expense_amount(remainder)
     if amount is None:
         return None, "Para registrar el movimiento necesito el importe."
 
-    category_name = None
-    cat_match = re.search(r"\bde\s+([\w\sáéíóúñü'-]+)\s*$", remainder, flags=re.IGNORECASE)
-    if cat_match:
-        category_name = _collapse_spaces(cat_match.group(1))
+    category_name = _extract_transaction_category_name(remainder)
 
     working = _remove_spans(
         remainder,
@@ -800,15 +907,10 @@ def _parse_natural_transaction(text: str) -> tuple[dict[str, Any] | None, str | 
             (amount_span, False),
         ],
     )
-    working = re.sub(
-        r"^(?:gaste|gast[eé]|pague|pag[eé]|compre|compr[eé]|he\s+gastado|cobr[eé]|recib[ií])\s+",
-        "",
-        working,
-        flags=re.IGNORECASE,
-    ).strip()
+    working = _EXPENSE_VERB_RE.sub("", working, count=1).strip()
     if category_name:
         working = re.sub(
-            rf"\s+de\s+{re.escape(category_name)}\s*$",
+            rf"\s+(?:de|en)\s+(?:el|la|los|las)?\s*{re.escape(category_name)}\s*$",
             "",
             working,
             flags=re.IGNORECASE,
@@ -821,9 +923,14 @@ def _parse_natural_transaction(text: str) -> tuple[dict[str, Any] | None, str | 
         flags=re.IGNORECASE,
     )
     if en_match:
-        description = _collapse_spaces(en_match.group(1)).title()
-    else:
-        description = _collapse_spaces(working)
+        candidate = _collapse_spaces(en_match.group(1)).title()
+        if _normalize_text(candidate) not in _CATEGORY_HINT_WORDS:
+            description = candidate
+
+    if not description:
+        cleaned = _collapse_spaces(working)
+        if cleaned and _normalize_text(cleaned) not in _CATEGORY_HINT_WORDS:
+            description = cleaned
 
     if not description:
         description = category_name or ("Ingreso" if transaction_type == "income" else "Gasto")
