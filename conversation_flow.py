@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import logging
+import os
 from dataclasses import dataclass
 
 from anthropic import AsyncAnthropic
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from agents import build_agent_system_prompt, get_agent
 from claude import generate_with_tools
@@ -23,13 +25,15 @@ from database import (
     update_memory,
 )
 from deterministic_handlers import try_handle_deterministic_message
+from model_tiering import get_model_fast, select_model_for_message
+from prompt_metrics import log_prompt_footprint
 from router import detect_agent
 
 logger = logging.getLogger(__name__)
 
-MODEL = "claude-sonnet-4-5"
 MAX_HISTORY_MESSAGES = 20
 MAX_TOOL_LOOPS = 12
+MAX_MEMORY_SUMMARY_CHARS = int(os.getenv("MAX_MEMORY_SUMMARY_CHARS", "2000"))
 
 
 class UserFacingError(Exception):
@@ -39,14 +43,18 @@ class UserFacingError(Exception):
 @dataclass(frozen=True)
 class ConversationResult:
     reply_messages: list[str]
+    model_used: str | None = None
+    model_tier_reason: str | None = None
 
 
 def _memory_context_block(summary: str) -> str:
+    trimmed = summary.strip()
+    if len(trimmed) > MAX_MEMORY_SUMMARY_CHARS:
+        trimmed = trimmed[: MAX_MEMORY_SUMMARY_CHARS - 1].rsplit(" ", 1)[0] + "…"
     return (
-        "MEMORIA DE CONVERSACIONES ANTERIORES:\n"
-        f"{summary}\n\n"
-        "Usa esto para personalizar respuestas "
-        "y detectar patrones a lo largo del tiempo."
+        "MEMORIA PREVIA:\n"
+        f"{trimmed}\n"
+        "Personaliza con esto; no lo cites salvo que sea relevante."
     )
 
 
@@ -65,7 +73,7 @@ async def _generate_memory_summary(client: AsyncAnthropic, *, conversation_text:
         f"Conversación:\n{conversation_text}"
     )
     response = await client.messages.create(
-        model=MODEL,
+        model=get_model_fast(),
         max_tokens=1200,
         system="Eres un analista de memoria conversacional. Responde solo con el resumen.",
         messages=[{"role": "user", "content": prompt}],
@@ -80,7 +88,7 @@ async def _merge_memory_summaries(client: AsyncAnthropic, *, old_summary: str, n
         "Genera un resumen actualizado y completo de máximo 400 palabras."
     )
     response = await client.messages.create(
-        model=MODEL,
+        model=get_model_fast(),
         max_tokens=1400,
         system="Fusiona memorias de conversación en una versión acumulativa, clara y útil.",
         messages=[{"role": "user", "content": prompt}],
@@ -147,6 +155,31 @@ async def _update_conversation_memory_if_needed(
         logger.exception("Memoria: error al generar o guardar resumen (chat %s)", chat_id)
 
 
+async def _run_memory_update_background(
+    session_factory: async_sessionmaker[AsyncSession],
+    *,
+    client: AsyncAnthropic,
+    chat_id: int,
+) -> None:
+    try:
+        async with session_factory() as session:
+            await _update_conversation_memory_if_needed(session, client=client, chat_id=chat_id)
+    except Exception:
+        logger.exception("Memoria: error en tarea background (chat %s)", chat_id)
+
+
+def schedule_conversation_memory_update(
+    session_factory: async_sessionmaker[AsyncSession],
+    *,
+    client: AsyncAnthropic,
+    chat_id: int,
+) -> None:
+    asyncio.create_task(
+        _run_memory_update_background(session_factory, client=client, chat_id=chat_id),
+        name=f"memory-update-{chat_id}",
+    )
+
+
 async def process_text_message(
     session: AsyncSession,
     *,
@@ -154,8 +187,11 @@ async def process_text_message(
     text: str,
     chat_id: int,
     user_id: int,
+    session_factory: async_sessionmaker[AsyncSession] | None = None,
 ) -> ConversationResult:
     outgoing_messages: list[str] = []
+    model_used: str | None = None
+    model_tier_reason: str | None = None
 
     previous_agent = await get_active_agent(session, telegram_chat_id=chat_id)
     selected_agent = detect_agent(text, previous_agent)
@@ -179,7 +215,8 @@ async def process_text_message(
         if deterministic_result.persist_conversation:
             await save_message(session, telegram_chat_id=chat_id, telegram_user_id=user_id, role="user", content=text)
             await save_message(session, telegram_chat_id=chat_id, telegram_user_id=user_id, role="assistant", content=deterministic_result.text)
-            await _update_conversation_memory_if_needed(session, client=client, chat_id=chat_id)
+            if session_factory is not None:
+                schedule_conversation_memory_update(session_factory, client=client, chat_id=chat_id)
         outgoing_messages.append(deterministic_result.text)
         return ConversationResult(reply_messages=outgoing_messages)
 
@@ -190,13 +227,33 @@ async def process_text_message(
 
     system_prompt = build_agent_system_prompt(agent)
     memory = await get_memory(session, telegram_chat_id=chat_id)
+    memory_chars = 0
     if memory is not None and memory.summary:
+        memory_chars = len(memory.summary.strip())
         system_prompt = f"{system_prompt}\n\n{_memory_context_block(memory.summary)}"
+
+    model_used, model_tier_reason = select_model_for_message(agent_key=selected_agent, user_text=text)
+    logger.info(
+        "Modelo seleccionado chat=%s agent=%s model=%s reason=%s",
+        chat_id,
+        selected_agent,
+        model_used,
+        model_tier_reason,
+    )
+    log_prompt_footprint(
+        chat_id=chat_id,
+        agent_key=selected_agent,
+        model=model_used,
+        tier_reason=model_tier_reason,
+        system_prompt=system_prompt,
+        api_messages=api_messages,
+        memory_chars=memory_chars,
+    )
 
     try:
         assistant_text, _tools_used = await generate_with_tools(
             client,
-            model=MODEL,
+            model=model_used,
             system_prompt=system_prompt,
             api_messages=api_messages,
             max_tool_loops=MAX_TOOL_LOOPS,
@@ -210,7 +267,12 @@ async def process_text_message(
 
     await save_message(session, telegram_chat_id=chat_id, telegram_user_id=user_id, role="user", content=text)
     await save_message(session, telegram_chat_id=chat_id, telegram_user_id=user_id, role="assistant", content=assistant_text)
-    await _update_conversation_memory_if_needed(session, client=client, chat_id=chat_id)
+    if session_factory is not None:
+        schedule_conversation_memory_update(session_factory, client=client, chat_id=chat_id)
 
     outgoing_messages.append(assistant_text)
-    return ConversationResult(reply_messages=outgoing_messages)
+    return ConversationResult(
+        reply_messages=outgoing_messages,
+        model_used=model_used,
+        model_tier_reason=model_tier_reason,
+    )

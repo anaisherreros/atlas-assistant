@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 from typing import Any
 
@@ -79,9 +80,16 @@ async def _post(path: str, payload: dict[str, Any]) -> Any:
 
 
 async def get_dashboard() -> Any:
-    dashboard = await _get("/api/assistant/dashboard/")
-    tasks_today = await get_tasks_today()
-    today_data = await get_today()
+    """Agrega dashboard + tareas de hoy + today en paralelo.
+
+    Propuesta (Atlas Vital, no implementada): GET /api/assistant/context/ que devuelva
+    dashboard, today, tasks_today y applied_template en una sola petición (~3 RTT → 1).
+    """
+    dashboard, tasks_today, today_data = await asyncio.gather(
+        _get("/api/assistant/dashboard/"),
+        get_tasks_today(),
+        get_today(),
+    )
     if isinstance(dashboard, dict):
         dashboard["tasks_today"] = tasks_today
         dashboard["today"] = today_data
