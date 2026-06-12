@@ -7,6 +7,7 @@ from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from finance_categories import resolve_finance_category_id
 from atlas_client import (
     _post,
     apply_day_template,
@@ -482,13 +483,14 @@ ATLAS_TOOLS: list[dict[str, Any]] = [
     ),
     _tool(
         "create_transaction",
-        "Registra una transacción financiera.",
+        "Registra una transacción financiera. Llama get_finance antes si necesitas category_id, o pasa category_name.",
         {
             "description": {"type": "string"},
             "amount": {"type": "number"},
             "transaction_type": {"type": "string", "enum": ["income", "expense"]},
             "date": {"type": "string"},
-            "category_id": {"type": "integer", "description": "Opcional"},
+            "category_id": {"type": "integer", "description": "ID de get_finance → categories[].id"},
+            "category_name": {"type": "string", "description": "Nombre de categoría o subcategoría (ej. comida, ocio)"},
         },
         ["description", "amount", "transaction_type", "date"],
     ),
@@ -729,20 +731,21 @@ async def dispatch_atlas_tool(name: str, raw: dict[str, Any]) -> Any:
         )
 
     if name == "create_transaction":
-        payload: dict[str, Any] = {
-            "description": args["description"],
-            "amount": float(args["amount"]),
-            "transaction_type": args["transaction_type"],
-            "date": args["date"],
-        }
-        if args.get("category_id") is not None:
-            payload["category_id"] = int(args["category_id"])
-            return await _post("/api/assistant/finance/transaction/", payload)
+        raw_category_id = args.get("category_id")
+        category_id = int(raw_category_id) if raw_category_id is not None else None
+        resolved_id, category_error = await resolve_finance_category_id(
+            category_name=args.get("category_name"),
+            category_id=category_id,
+            transaction_type=str(args["transaction_type"]),
+        )
+        if category_error and (args.get("category_name") or category_id is not None):
+            raise ValueError(category_error)
         return await create_transaction(
-            description=payload["description"],
-            amount=payload["amount"],
-            transaction_type=payload["transaction_type"],
-            date=payload["date"],
+            description=args["description"],
+            amount=float(args["amount"]),
+            transaction_type=args["transaction_type"],
+            date=args["date"],
+            category_id=resolved_id,
         )
     if name == "delete_transaction":
         return await delete_transaction(int(args["transaction_id"]))

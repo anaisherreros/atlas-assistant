@@ -240,13 +240,16 @@ async def create_transaction(
     amount: float,
     transaction_type: str,
     date: str,
+    category_id: int | None = None,
 ) -> Any:
-    payload = {
+    payload: dict[str, Any] = {
         "description": description,
         "amount": amount,
         "transaction_type": transaction_type,
         "date": date,
     }
+    if category_id is not None:
+        payload["category_id"] = category_id
     return await _post("/api/assistant/finance/transaction/", payload)
 
 

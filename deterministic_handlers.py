@@ -20,6 +20,7 @@ from atlas_client import (
     get_today,
     log_habit,
 )
+from finance_categories import resolve_finance_category_id
 
 logger = logging.getLogger(__name__)
 
@@ -424,7 +425,11 @@ def _extract_priority(text: str) -> tuple[str | None, tuple[int, int] | None]:
 
 
 def _extract_amount(text: str) -> tuple[float | None, tuple[int, int] | None]:
-    match = re.search(r"(-?\d+(?:[.,]\d{1,2})?)\s*(?:€|euros?)?\b", text, flags=re.IGNORECASE)
+    match = re.search(
+        r"(-?\d+(?:[.,]\d{1,2})?)\s*(?:€|euros?|chf|fr\.?|francos?|francs?|s\.?)?\b",
+        text,
+        flags=re.IGNORECASE,
+    )
     if not match:
         return None, None
     raw = match.group(1).replace(",", ".")
@@ -563,6 +568,19 @@ def _match_create_transaction(normalized: str) -> bool:
         "anota ingreso",
     )
     return any(normalized.startswith(prefix) for prefix in starts)
+
+
+def _match_natural_expense(normalized: str) -> bool:
+    if _match_create_transaction(normalized):
+        return False
+    if not re.search(r"\d", normalized):
+        return False
+    return bool(
+        re.search(
+            r"\b(gaste|gast[eé]|pague|pag[eé]|compre|compr[eé]|he\s+gastado|gastado|cobr[eé]|recib[ií]|ingreso)\b",
+            normalized,
+        )
+    )
 
 
 def _strip_command_prefix(text: str, patterns: tuple[str, ...]) -> str:
@@ -746,6 +764,79 @@ def _parse_create_transaction(text: str) -> tuple[dict[str, Any] | None, str | N
         "transaction_type": transaction_type,
         "date": tx_date,
     }, None
+
+
+def _parse_natural_transaction(text: str) -> tuple[dict[str, Any] | None, str | None]:
+    normalized = _normalize_text(text)
+    if not re.search(
+        r"\b(gaste|gast[eé]|pague|pag[eé]|compre|compr[eé]|he\s+gastado|gastado|cobr[eé]|recib[ií]|ingreso)\b",
+        normalized,
+    ):
+        return None, None
+
+    transaction_type = "expense"
+    if re.search(r"\b(ingreso|cobre|cobr[eé]|recib[ií]|me\s+pagaron|me\s+entr[oó])\b", normalized):
+        transaction_type = "income"
+
+    remainder = text.strip()
+    tx_date, date_span = _extract_date_token(remainder)
+    if tx_date is None:
+        tx_date = _today().isoformat()
+        date_span = None
+
+    amount, amount_span = _extract_amount(remainder)
+    if amount is None:
+        return None, "Para registrar el movimiento necesito el importe."
+
+    category_name = None
+    cat_match = re.search(r"\bde\s+([\w\sáéíóúñü'-]+)\s*$", remainder, flags=re.IGNORECASE)
+    if cat_match:
+        category_name = _collapse_spaces(cat_match.group(1))
+
+    working = _remove_spans(
+        remainder,
+        [
+            (date_span, True),
+            (amount_span, False),
+        ],
+    )
+    working = re.sub(
+        r"^(?:gaste|gast[eé]|pague|pag[eé]|compre|compr[eé]|he\s+gastado|cobr[eé]|recib[ií])\s+",
+        "",
+        working,
+        flags=re.IGNORECASE,
+    ).strip()
+    if category_name:
+        working = re.sub(
+            rf"\s+de\s+{re.escape(category_name)}\s*$",
+            "",
+            working,
+            flags=re.IGNORECASE,
+        ).strip()
+
+    description = None
+    en_match = re.search(
+        r"\ben\s+(?:el|la|los|las)?\s*([\w\d\sáéíóúñü'&.-]+?)(?:\s+de\s+[\w\sáéíóúñ'-]+)?\s*$",
+        working,
+        flags=re.IGNORECASE,
+    )
+    if en_match:
+        description = _collapse_spaces(en_match.group(1)).title()
+    else:
+        description = _collapse_spaces(working)
+
+    if not description:
+        description = category_name or ("Ingreso" if transaction_type == "income" else "Gasto")
+
+    payload: dict[str, Any] = {
+        "description": description,
+        "amount": amount,
+        "transaction_type": transaction_type,
+        "date": tx_date,
+    }
+    if category_name:
+        payload["category_name"] = category_name
+    return payload, None
 
 
 async def _handle_help_query() -> DeterministicResult | None:
@@ -962,10 +1053,29 @@ async def _handle_mark_habit(text: str) -> DeterministicResult | None:
 
 async def _handle_create_transaction(text: str) -> DeterministicResult | None:
     payload, error = _parse_create_transaction(text)
+    if payload is None:
+        payload, error = _parse_natural_transaction(text)
     if error:
         return DeterministicResult(error)
-    assert payload is not None
-    result = await create_transaction(**payload)
+    if payload is None:
+        return None
+
+    category_name = payload.pop("category_name", None)
+    category_id, category_error = await resolve_finance_category_id(
+        category_name=category_name,
+        category_id=payload.get("category_id"),
+        transaction_type=str(payload["transaction_type"]),
+    )
+    if category_error:
+        return DeterministicResult(category_error)
+
+    result = await create_transaction(
+        description=str(payload["description"]),
+        amount=float(payload["amount"]),
+        transaction_type=str(payload["transaction_type"]),
+        date=str(payload["date"]),
+        category_id=category_id,
+    )
     transaction_label = "Ingreso" if payload["transaction_type"] == "income" else "Gasto"
     category = _extract_transaction_category(result)
     lines = [
@@ -1000,7 +1110,7 @@ async def try_handle_deterministic_message(text: str) -> DeterministicResult | N
     if _match_mark_habit(normalized):
         logger.info("Ruta determinista: log_habit_completion")
         return await _handle_mark_habit(text)
-    if _match_create_transaction(normalized):
+    if _match_create_transaction(normalized) or _match_natural_expense(normalized):
         logger.info("Ruta determinista: create_transaction")
         return await _handle_create_transaction(text)
     if _match_today_query(normalized):
