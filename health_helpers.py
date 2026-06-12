@@ -76,3 +76,12 @@ def extract_weight_kg_from_text(text: str) -> float | None:
         except ValueError:
             continue
     return None
+
+
+async def register_weight_kg(*, date: str, weight_kg: float, note: str = "") -> dict[str, Any]:
+    """Guarda peso en Medidas (BodyMeasurement) y diario físico (HealthPhysicalLog)."""
+    from atlas_client import create_body_measurement, update_health
+
+    body = await create_body_measurement(date, weight_kg=weight_kg, note=note)
+    health = await update_health(date, physical={"weight_kg": weight_kg, "note": note})
+    return {"body_measurement": body, "health": health}

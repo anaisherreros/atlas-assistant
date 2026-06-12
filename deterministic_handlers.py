@@ -19,10 +19,9 @@ from atlas_client import (
     get_tasks_pending,
     get_today,
     log_habit,
-    update_health,
 )
 from finance_categories import resolve_finance_category_id
-from health_helpers import extract_weight_kg_from_text
+from health_helpers import extract_weight_kg_from_text, register_weight_kg
 
 logger = logging.getLogger(__name__)
 
@@ -212,6 +211,16 @@ def _format_amount(amount: float | None) -> str | None:
         return None
     formatted = f"{amount:,.2f}".replace(",", "_").replace(".", ",").replace("_", ".")
     return f"{formatted} {_DEFAULT_CURRENCY}"
+
+
+def _format_kg(weight_kg: Any) -> str:
+    try:
+        value = float(weight_kg)
+    except (TypeError, ValueError):
+        return str(weight_kg)
+    if value.is_integer():
+        return str(int(value))
+    return f"{value:.1f}".rstrip("0").rstrip(".")
 
 
 def _format_time_window(start_time: object, end_time: object) -> str:
@@ -720,17 +729,22 @@ async def _handle_log_weight(text: str) -> DeterministicResult | None:
     if payload is None:
         return None
 
-    result = await update_health(
+    result = await register_weight_kg(
         date=str(payload["date"]),
-        physical={"weight_kg": payload["weight_kg"]},
+        weight_kg=float(payload["weight_kg"]),
     )
-    physical = result.get("physical_log") if isinstance(result, dict) else None
+    body = result.get("body_measurement") if isinstance(result, dict) else None
+    measurement = body.get("body_measurement") if isinstance(body, dict) else None
     saved_weight = payload["weight_kg"]
-    if isinstance(physical, dict) and physical.get("weight_kg") is not None:
-        saved_weight = physical["weight_kg"]
+    if isinstance(measurement, dict) and measurement.get("weight_kg") is not None:
+        saved_weight = measurement["weight_kg"]
+    else:
+        health = result.get("health") if isinstance(result, dict) else None
+        physical = health.get("physical_log") if isinstance(health, dict) else None
+        if isinstance(physical, dict) and physical.get("weight_kg") is not None:
+            saved_weight = physical["weight_kg"]
     return DeterministicResult(
-        f"Peso registrado: {saved_weight} kg · {payload['date']}\n"
-        f"Respuesta Atlas: {_json_excerpt(result, max_len=220)}"
+        f"✅ Peso registrado · {_format_kg(saved_weight)} kg · {payload['date']}"
     )
 
 

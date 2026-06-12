@@ -212,8 +212,11 @@ def _build_write_confirmation(outcome: _WriteToolOutcome) -> str:
 
     if name == "log_weight":
         date_label = _format_date_label(inp.get("date"))
-        physical = payload.get("physical_log") if isinstance(payload.get("physical_log"), dict) else {}
-        weight = physical.get("weight_kg") or inp.get("weight_kg")
+        body_payload = payload.get("body_measurement") if isinstance(payload.get("body_measurement"), dict) else {}
+        measurement = body_payload.get("body_measurement") if isinstance(body_payload.get("body_measurement"), dict) else {}
+        health_payload = payload.get("health") if isinstance(payload.get("health"), dict) else {}
+        physical = health_payload.get("physical_log") if isinstance(health_payload.get("physical_log"), dict) else {}
+        weight = measurement.get("weight_kg") or physical.get("weight_kg") or inp.get("weight_kg")
         return f"✅ Peso registrado · {weight} kg · {date_label}"
 
     if name == "log_body_measurement":

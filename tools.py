@@ -8,7 +8,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from finance_categories import resolve_finance_category_id
-from health_helpers import normalize_body_measurement_payload, normalize_physical_payload
+from health_helpers import normalize_body_measurement_payload, normalize_physical_payload, register_weight_kg
 from atlas_client import (
     _post,
     apply_day_template,
@@ -763,13 +763,11 @@ async def dispatch_atlas_tool(name: str, raw: dict[str, Any]) -> Any:
         )
     if name == "log_weight":
         log_date = _normalize_habit_log_date(args.get("date"))
-        physical = normalize_physical_payload(
-            {
-                "weight_kg": args["weight_kg"],
-                "note": args.get("note", ""),
-            }
+        return await register_weight_kg(
+            date=log_date,
+            weight_kg=float(args["weight_kg"]),
+            note=str(args.get("note") or ""),
         )
-        return await update_health(date=log_date, physical=physical)
     if name == "log_body_measurement":
         log_date = _normalize_habit_log_date(args.get("date"))
         fields = normalize_body_measurement_payload(args)
