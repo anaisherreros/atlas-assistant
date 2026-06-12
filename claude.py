@@ -441,8 +441,9 @@ async def generate_with_tools(
 
     for loop_idx in range(max_tool_loops):
         logger.info(
-            "Llamada Claude [%s] con %d mensajes (tools habilitadas)",
+            "Llamada Claude [%s] model=%s con %d mensajes (tools habilitadas)",
             loop_idx + 1,
+            model,
             len(conversation_messages),
         )
         response = await client.messages.create(

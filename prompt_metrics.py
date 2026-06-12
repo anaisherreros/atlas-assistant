@@ -10,10 +10,10 @@ _CHARS_PER_TOKEN = 4
 
 # Referencia medida en repo (jun 2026): system prompts completos con bloque Atlas.
 BASELINE_SYSTEM_TOKENS: dict[str, int] = {
-    "personal": 1430,
-    "coach": 1963,
-    "financial": 1087,
-    "performance": 1607,
+    "personal": 1526,
+    "coach": 2060,
+    "financial": 1242,
+    "performance": 1739,
 }
 BASELINE_MEMORY_WRAPPER_CHARS = 120
 BASELINE_MEMORY_WRAPPER_TOKENS = 30

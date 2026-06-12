@@ -106,16 +106,25 @@ async def post_shutdown(application: Application) -> None:
     logger.info("Motor SQLAlchemy cerrado.")
 
 
-async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def handle_user_message(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    text: str,
+) -> None:
     if update.message is None or update.effective_chat is None:
         return
 
-    text = (update.message.text or "").strip()
+    text = text.strip()
     if not text:
         return
 
     chat_id = update.effective_chat.id
     user_id = update.effective_user.id if update.effective_user else chat_id
+
+    try:
+        await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
+    except Exception:
+        logger.exception("No se pudo enviar chat action TYPING inicial (chat %s)", chat_id)
 
     session_factory_: async_sessionmaker[AsyncSession] = context.application.bot_data[
         "session_factory"
@@ -180,3 +189,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         reply_messages=result.reply_messages,
         provisional_message=provisional_message,
     )
+
+
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message is None:
+        return
+    text = (update.message.text or "").strip()
+    if not text:
+        return
+    await handle_user_message(update, context, text)
