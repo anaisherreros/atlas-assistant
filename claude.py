@@ -23,6 +23,8 @@ WRITE_TOOLS = frozenset({
     "complete_task",
     "log_self_relationship",
     "log_relationship",
+    "apply_day_template",
+    "remove_day_template",
 })
 
 _INSPECT_LOGS_REMAINING = int(os.getenv("CLAUDE_INSPECT_LOGS", "50"))
@@ -146,6 +148,8 @@ def _build_write_confirmation(outcome: _WriteToolOutcome) -> str:
         "complete_task": ("completar la tarea", "tarea"),
         "log_self_relationship": ("registrar reflexión personal", "reflexión"),
         "log_relationship": ("registrar la interacción", "interacción"),
+        "apply_day_template": ("aplicar la plantilla", "plantilla"),
+        "remove_day_template": ("quitar la plantilla", "plantilla"),
     }
     verb, noun = labels.get(name, (name, name))
 
@@ -213,6 +217,27 @@ def _build_write_confirmation(outcome: _WriteToolOutcome) -> str:
         date_label = _format_date_label(log.get("date") or inp.get("date"))
         feeling = inp.get("self_feeling") or "reflexión"
         return f"✅ Reflexión personal registrada · {feeling} · {date_label}"
+
+    if name == "apply_day_template":
+        applied = payload.get("applied_template") if isinstance(payload.get("applied_template"), dict) else {}
+        template = applied.get("template") if isinstance(applied.get("template"), dict) else {}
+        title = template.get("name") or inp.get("template_name") or "plantilla"
+        date_label = _format_date_label(payload.get("date") or applied.get("date") or inp.get("date"))
+        blocks = payload.get("time_logs_created")
+        if blocks is None:
+            blocks = payload.get("block_count")
+        suffix = f" · {blocks} bloques" if blocks is not None else ""
+        if payload.get("created") is False:
+            return f"✅ Plantilla '{title}' actualizada · {date_label}{suffix}"
+        return f"✅ Plantilla '{title}' aplicada · {date_label}{suffix}"
+
+    if name == "remove_day_template":
+        date_label = _format_date_label(payload.get("date") or inp.get("date"))
+        if not payload.get("removed"):
+            return f"⚠️ No había plantilla aplicada · {date_label}"
+        deleted = payload.get("time_logs_deleted")
+        suffix = f" · {deleted} bloques quitados" if deleted is not None else ""
+        return f"✅ Plantilla quitada · {date_label}{suffix}"
 
     return f"✅ {noun.capitalize()} registrado"
 

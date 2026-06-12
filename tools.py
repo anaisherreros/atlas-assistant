@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 
 from atlas_client import (
     _post,
+    apply_day_template,
     complete_task,
     create_daily_review,
     create_desire,
@@ -26,6 +27,7 @@ from atlas_client import (
     delete_task,
     delete_transaction,
     get_all_desires_full,
+    get_applied_day_template,
     get_areas_full,
     get_calendar,
     get_dashboard,
@@ -36,11 +38,13 @@ from atlas_client import (
     get_reviews_summary,
     get_tasks_pending,
     get_today,
+    list_day_templates,
     log_exercise,
     log_health,
     log_habit,
     log_relationship,
     log_self_relationship,
+    remove_day_template,
     update_desire,
     update_goal,
     update_habit,
@@ -123,6 +127,51 @@ async def _resolve_habit_for_log(args: dict[str, Any]) -> int:
     raise ValueError(f"habit_id {habit_id} no corresponde a un hábito de hoy. Disponibles: {options}")
 
 
+async def _resolve_template_for_apply(args: dict[str, Any]) -> int:
+    payload = await list_day_templates()
+    templates = payload.get("templates") if isinstance(payload, dict) else None
+    if not isinstance(templates, list) or not templates:
+        raise ValueError("No hay plantillas de día en Atlas Vital.")
+
+    template_name = str(args.get("template_name") or args.get("name") or "").strip()
+    if template_name:
+        normalized_name = _normalize_habit_text(template_name)
+        exact = [
+            template
+            for template in templates
+            if _normalize_habit_text(str(template.get("name") or "")) == normalized_name
+        ]
+        if len(exact) == 1 and exact[0].get("id") is not None:
+            return int(exact[0]["id"])
+        partial = [
+            template
+            for template in templates
+            if normalized_name in _normalize_habit_text(str(template.get("name") or ""))
+            or _normalize_habit_text(str(template.get("name") or "")) in normalized_name
+        ]
+        if len(partial) == 1 and partial[0].get("id") is not None:
+            return int(partial[0]["id"])
+        options = ", ".join(f"[{template.get('id')}] {template.get('name')}" for template in templates[:8])
+        raise ValueError(f"No encontré la plantilla '{template_name}'. Disponibles: {options}")
+
+    raw_id = args.get("template_id")
+    if raw_id is None:
+        options = ", ".join(f"[{template.get('id')}] {template.get('name')}" for template in templates[:8])
+        raise ValueError(f"Falta template_id o template_name. Plantillas: {options}")
+
+    try:
+        template_id = int(raw_id)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"template_id inválido: {raw_id!r}") from exc
+
+    for template in templates:
+        if template.get("id") == template_id:
+            return template_id
+
+    options = ", ".join(f"[{template.get('id')}] {template.get('name')}" for template in templates[:8])
+    raise ValueError(f"template_id {template_id} no existe. Disponibles: {options}")
+
+
 def _tool(
     name: str,
     description: str,
@@ -203,6 +252,38 @@ ATLAS_TOOLS: list[dict[str, Any]] = [
             "end_date": {"type": "string", "description": "Fin (YYYY-MM-DD)"},
         },
         ["start_date", "end_date"],
+    ),
+    _tool(
+        "list_day_templates",
+        "Lista plantillas de día disponibles (bloques horarios reutilizables).",
+        {},
+        [],
+    ),
+    _tool(
+        "get_applied_day_template",
+        "Consulta qué plantilla está aplicada a una fecha.",
+        {
+            "date": {"type": "string", "description": "YYYY-MM-DD; omitir = hoy (Zurich)"},
+        },
+        [],
+    ),
+    _tool(
+        "apply_day_template",
+        "Aplica una plantilla de día a una fecha (crea bloques en la agenda).",
+        {
+            "template_id": {"type": "integer", "description": "ID de list_day_templates"},
+            "template_name": {"type": "string", "description": "Nombre de la plantilla si no conoces el ID"},
+            "date": {"type": "string", "description": "YYYY-MM-DD; omitir o 'hoy' = hoy (Zurich)"},
+        },
+        [],
+    ),
+    _tool(
+        "remove_day_template",
+        "Quita la plantilla aplicada de una fecha y sus bloques de agenda generados.",
+        {
+            "date": {"type": "string", "description": "YYYY-MM-DD; omitir o 'hoy' = hoy (Zurich)"},
+        },
+        [],
     ),
     _tool(
         "get_tasks_pending",
@@ -536,6 +617,18 @@ async def dispatch_atlas_tool(name: str, raw: dict[str, Any]) -> Any:
         return await get_finance()
     if name == "get_calendar":
         return await get_calendar(args["start_date"], args["end_date"])
+    if name == "list_day_templates":
+        return await list_day_templates()
+    if name == "get_applied_day_template":
+        return await get_applied_day_template(_normalize_habit_log_date(args.get("date")))
+    if name == "apply_day_template":
+        template_id = await _resolve_template_for_apply(args)
+        return await apply_day_template(
+            template_id=template_id,
+            date=_normalize_habit_log_date(args.get("date")),
+        )
+    if name == "remove_day_template":
+        return await remove_day_template(_normalize_habit_log_date(args.get("date")))
     if name == "get_tasks_pending":
         return await get_tasks_pending()
 

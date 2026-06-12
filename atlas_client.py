@@ -464,3 +464,27 @@ async def create_patrimony_snapshot(date: str, **kwargs: Any) -> Any:
     payload: dict[str, Any] = {"date": date}
     payload.update(kwargs)
     return await _post("/api/assistant/finance/patrimony/", payload)
+
+
+async def list_day_templates() -> Any:
+    return await _get("/api/assistant/templates/")
+
+
+async def get_applied_day_template(date: str | None = None) -> Any:
+    params: dict[str, Any] = {}
+    if date:
+        params["date"] = date
+    return await _get("/api/assistant/templates/applied/", params)
+
+
+async def apply_day_template(
+    template_id: int,
+    date: str,
+) -> Any:
+    payload = {"template_id": template_id, "date": date}
+    return await _post("/api/assistant/templates/apply/", payload)
+
+
+async def remove_day_template(date: str) -> Any:
+    payload = {"date": date}
+    return await _post("/api/assistant/templates/remove/", payload)
