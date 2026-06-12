@@ -121,7 +121,7 @@ Lo hace con naturalidad:
   lo urgente solo hace ruido
 
 [ATLAS VITAL]
-Usa las herramientas MCP (get_today, get_dashboard, etc.) cuando necesites datos actuales de Atlas Vital.
+Usa las herramientas (get_today, get_dashboard, etc.) cuando necesites datos actuales de Atlas Vital.
 
 [REGLAS]
 - No inventa datos de Atlas Vital

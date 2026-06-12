@@ -1,24 +1,32 @@
 from __future__ import annotations
 
+import json
 import logging
-import os
 from typing import Any
 
 from anthropic import AsyncAnthropic
 
+from tools import ATLAS_TOOLS, dispatch_atlas_tool
+
 logger = logging.getLogger(__name__)
 
-_MCP_URL = os.environ.get("ATLAS_VITAL_URL", "").rstrip("/") + "/mcp"
-_MCP_TOKEN = os.environ.get("ASSISTANT_API_KEY", "")
 
-_MCP_SERVERS = [
-    {
-        "type": "url",
-        "url": _MCP_URL,
-        "name": "atlas_vital",
-        "authorization_token": _MCP_TOKEN,
-    }
-]
+def _serialize_assistant_content(content: list[Any]) -> list[dict[str, Any]]:
+    blocks: list[dict[str, Any]] = []
+    for block in content:
+        block_type = getattr(block, "type", None)
+        if block_type == "text":
+            blocks.append({"type": "text", "text": block.text})
+        elif block_type == "tool_use":
+            blocks.append(
+                {
+                    "type": "tool_use",
+                    "id": block.id,
+                    "name": block.name,
+                    "input": block.input,
+                }
+            )
+    return blocks
 
 
 async def generate_with_tools(
@@ -27,35 +35,82 @@ async def generate_with_tools(
     model: str,
     system_prompt: str,
     api_messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]] | None = None,
+    max_tool_loops: int = 12,
 ) -> tuple[str, bool]:
-    """
-    Llama a Claude con el servidor MCP de Atlas Vital.
-    Anthropic gestiona el ciclo de tool calls contra el MCP server.
-    """
-    response = await client.beta.messages.create(
-        model=model,
-        max_tokens=8192,
-        system=system_prompt,
-        messages=api_messages,
-        mcp_servers=_MCP_SERVERS,
-        betas=["mcp-client-2025-04-04"],
+    """Claude con tool use local: el bot llama a Atlas Vital vía REST (atlas_client)."""
+    conversation_messages: list[dict[str, Any]] = list(api_messages)
+    tools_were_used = False
+    available_tools = ATLAS_TOOLS if tools is None else tools
+
+    for loop_idx in range(max_tool_loops):
+        logger.info(
+            "Llamada Claude [%s] con %d mensajes (tools habilitadas)",
+            loop_idx + 1,
+            len(conversation_messages),
+        )
+        response = await client.messages.create(
+            model=model,
+            max_tokens=8192,
+            system=system_prompt,
+            tools=available_tools,
+            messages=conversation_messages,
+        )
+        logger.info(
+            "Tokens - input: %s output: %s | stop: %s",
+            response.usage.input_tokens,
+            response.usage.output_tokens,
+            response.stop_reason,
+        )
+
+        assistant_text_parts: list[str] = []
+        assistant_content = _serialize_assistant_content(list(response.content))
+        tool_result_blocks: list[dict[str, Any]] = []
+
+        for block in response.content:
+            if block.type == "text":
+                assistant_text_parts.append(block.text)
+                continue
+            if block.type != "tool_use":
+                continue
+
+            tools_were_used = True
+            tool_input = block.input if isinstance(block.input, dict) else {}
+            logger.info("Ejecutando tool: %s con input: %s", block.name, tool_input)
+
+            try:
+                result = await dispatch_atlas_tool(block.name, tool_input)
+                logger.info("Resultado de tool %s: %s", block.name, result)
+                tool_result_blocks.append(
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": block.id,
+                        "content": json.dumps(result, ensure_ascii=False),
+                    }
+                )
+            except Exception as exc:
+                logger.exception("Error ejecutando tool de Atlas Vital: %s", block.name)
+                tool_result_blocks.append(
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": block.id,
+                        "content": f"Error al ejecutar {block.name}: {exc}",
+                        "is_error": True,
+                    }
+                )
+
+        conversation_messages.append({"role": "assistant", "content": assistant_content})
+
+        if tool_result_blocks:
+            conversation_messages.append({"role": "user", "content": tool_result_blocks})
+            continue
+
+        assistant_text = "".join(assistant_text_parts).strip()
+        if assistant_text:
+            return assistant_text, tools_were_used
+        return "(Sin contenido de texto en la respuesta.)", tools_were_used
+
+    return (
+        "Alcanzado el límite de pasadas de herramientas sin respuesta final.",
+        tools_were_used,
     )
-
-    logger.info(
-        "Tokens - input: %s output: %s | stop: %s",
-        response.usage.input_tokens,
-        response.usage.output_tokens,
-        response.stop_reason,
-    )
-
-    text_parts: list[str] = []
-    tools_used = False
-    for block in response.content:
-        block_type = getattr(block, "type", None)
-        if block_type == "text":
-            text_parts.append(block.text)
-        elif block_type in ("tool_use", "mcp_tool_use", "mcp_tool_result"):
-            tools_used = True
-
-    text = "".join(text_parts).strip()
-    return text or "(Sin respuesta de texto.)", tools_used

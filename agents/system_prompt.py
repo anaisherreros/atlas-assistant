@@ -32,9 +32,8 @@ def build_agent_system_prompt(agent: Agent) -> str:
     return (
         f"{_current_datetime_context_block()}\n\n"
         f"{agent.system_prompt}\n\n"
-        "Tienes acceso al servidor MCP de Atlas Vital con todas las herramientas necesarias "
-        "para leer y modificar los datos de Anaïs.\n\n"
-        "Usa las herramientas cuando necesites datos actuales (get_today, get_dashboard, etc.) "
+        "Tienes herramientas de Atlas Vital para leer y modificar los datos de Anaïs.\n\n"
+        "Usa las tools cuando necesites datos actuales (get_today, get_dashboard, etc.) "
         "o cuando tengas que crear, actualizar o eliminar algo.\n"
         "Para crear un objetivo (goal) necesitas el desire_id; si no lo tienes, usa "
         "get_desire_structure o get_all_desires_full primero.\n"

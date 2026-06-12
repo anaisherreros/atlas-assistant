@@ -29,6 +29,7 @@ logger = logging.getLogger(__name__)
 
 MODEL = "claude-sonnet-4-5"
 MAX_HISTORY_MESSAGES = 20
+MAX_TOOL_LOOPS = 12
 
 
 class UserFacingError(Exception):
@@ -198,9 +199,10 @@ async def process_text_message(
             model=MODEL,
             system_prompt=system_prompt,
             api_messages=api_messages,
+            max_tool_loops=MAX_TOOL_LOOPS,
         )
     except Exception as exc:
-        logger.exception("Error al llamar a la API de Anthropic")
+        logger.exception("Error al llamar a la API de Anthropic: %s", exc)
         raise UserFacingError(
             "No pude obtener respuesta del asistente ahora mismo. "
             "Inténtalo de nuevo en unos segundos."
