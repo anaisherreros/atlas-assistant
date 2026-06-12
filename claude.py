@@ -27,8 +27,6 @@ async def generate_with_tools(
     model: str,
     system_prompt: str,
     api_messages: list[dict[str, Any]],
-    tools: list[dict[str, Any]] | None = None,  # ignorado, tools vienen del MCP server
-    max_tool_loops: int = 12,  # ignorado, Anthropic lo gestiona internamente
 ) -> tuple[str, bool]:
     """
     Llama a Claude con el servidor MCP de Atlas Vital.

@@ -23,13 +23,12 @@ from database import (
     update_memory,
 )
 from deterministic_handlers import try_handle_deterministic_message
-from router import TRANSITION_MESSAGES, detect_agent
+from router import detect_agent
 
 logger = logging.getLogger(__name__)
 
 MODEL = "claude-sonnet-4-5"
 MAX_HISTORY_MESSAGES = 20
-MAX_TOOL_LOOPS = 12
 
 
 class UserFacingError(Exception):
@@ -39,10 +38,6 @@ class UserFacingError(Exception):
 @dataclass(frozen=True)
 class ConversationResult:
     reply_messages: list[str]
-
-
-def _should_persist_response(assistant_text: str, tools_used: bool) -> bool:
-    return not (tools_used and len(assistant_text.split()) < 100)
 
 
 def _memory_context_block(summary: str) -> str:
@@ -166,8 +161,6 @@ async def process_text_message(
     await ensure_chat_session(session, telegram_chat_id=chat_id, active_agent=selected_agent)
 
     if selected_agent != previous_agent:
-        transition = TRANSITION_MESSAGES.get(selected_agent, "Cambiando de agente...")
-        outgoing_messages.append(transition)
         await set_active_agent(session, telegram_chat_id=chat_id, active_agent=selected_agent)
         logger.info("Agente activo: %s → %s", previous_agent, selected_agent)
 
@@ -200,12 +193,11 @@ async def process_text_message(
         system_prompt = f"{system_prompt}\n\n{_memory_context_block(memory.summary)}"
 
     try:
-        assistant_text, tools_used = await generate_with_tools(
+        assistant_text, _tools_used = await generate_with_tools(
             client,
             model=MODEL,
             system_prompt=system_prompt,
             api_messages=api_messages,
-            max_tool_loops=MAX_TOOL_LOOPS,
         )
     except Exception as exc:
         logger.exception("Error al llamar a la API de Anthropic")
@@ -214,10 +206,9 @@ async def process_text_message(
             "Inténtalo de nuevo en unos segundos."
         ) from exc
 
-    if _should_persist_response(assistant_text, tools_used):
-        await save_message(session, telegram_chat_id=chat_id, telegram_user_id=user_id, role="user", content=text)
-        await save_message(session, telegram_chat_id=chat_id, telegram_user_id=user_id, role="assistant", content=assistant_text)
-        await _update_conversation_memory_if_needed(session, client=client, chat_id=chat_id)
+    await save_message(session, telegram_chat_id=chat_id, telegram_user_id=user_id, role="user", content=text)
+    await save_message(session, telegram_chat_id=chat_id, telegram_user_id=user_id, role="assistant", content=assistant_text)
+    await _update_conversation_memory_if_needed(session, client=client, chat_id=chat_id)
 
     outgoing_messages.append(assistant_text)
     return ConversationResult(reply_messages=outgoing_messages)

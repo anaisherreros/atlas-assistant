@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 import unicodedata
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Any, Iterable
+from zoneinfo import ZoneInfo
 
 from atlas_client import (
     complete_task,
@@ -20,6 +22,9 @@ from atlas_client import (
 )
 
 logger = logging.getLogger(__name__)
+
+_DEFAULT_CURRENCY = os.getenv("DEFAULT_CURRENCY", "CHF")
+_ZURICH_TZ = ZoneInfo("Europe/Zurich")
 
 
 @dataclass(frozen=True)
@@ -202,7 +207,8 @@ def _extract_category_rows(payload: Any) -> list[tuple[str, float]]:
 def _format_amount(amount: float | None) -> str | None:
     if amount is None:
         return None
-    return f"{amount:,.2f} EUR".replace(",", "_").replace(".", ",").replace("_", ".")
+    formatted = f"{amount:,.2f}".replace(",", "_").replace(".", ",").replace("_", ".")
+    return f"{formatted} {_DEFAULT_CURRENCY}"
 
 
 def _format_time_window(start_time: object, end_time: object) -> str:
@@ -247,7 +253,30 @@ def _json_excerpt(payload: Any, *, max_len: int = 450) -> str:
 
 
 def _today() -> date:
-    return datetime.now().date()
+    return datetime.now(_ZURICH_TZ).date()
+
+
+def _api_created_flag(api_response: Any) -> bool | None:
+    if isinstance(api_response, dict) and "created" in api_response:
+        return bool(api_response["created"])
+    return None
+
+
+def _extract_transaction_category(api_response: Any) -> str | None:
+    if not isinstance(api_response, dict):
+        return None
+    transaction = api_response.get("transaction")
+    if not isinstance(transaction, dict):
+        return None
+    category = transaction.get("category")
+    if isinstance(category, dict):
+        for key in ("name", "title", "label"):
+            value = category.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    if isinstance(category, str) and category.strip():
+        return category.strip()
+    return None
 
 
 def _extract_date_token(text: str) -> tuple[str | None, tuple[int, int] | None]:
@@ -625,7 +654,7 @@ def _parse_create_task(text: str) -> tuple[dict[str, Any] | None, str | None]:
     if due_date is None and start_time:
         due_date = _today().isoformat()
     if not due_date:
-        return None, "Para crear la tarea necesito una fecha clara, por ejemplo hoy, mañana o 2026-05-20."
+        due_date = _today().isoformat()
     if not title:
         return None, "Para crear la tarea necesito también un título."
 
@@ -753,9 +782,8 @@ async def _handle_today_query() -> DeterministicResult | None:
     tasks = _extract_tasks_from_payload(payload)
     habits = _extract_habits_from_payload(payload)
     if not tasks and not habits:
-        return DeterministicResult(
-            f"Ya consulté Atlas para hoy, pero no pude resumirlo bien de forma determinista:\n{_json_excerpt(payload)}"
-        )
+        logger.warning("No pude interpretar get_today: %s", payload)
+        return DeterministicResult("No pude interpretar la respuesta de Atlas Vital.")
 
     lines = ["Esto es lo que tienes hoy:"]
     lines.append("")
@@ -852,8 +880,13 @@ async def _handle_create_task(text: str) -> DeterministicResult | None:
     created = await create_task(**payload)
     priority = payload.get("priority", "medium")
     schedule = _format_time_window(payload.get("start_time"), payload.get("end_time"))
+    created_flag = _api_created_flag(created)
+    if created_flag is False:
+        header = f"⚠️ Ya existía: {payload['title']}"
+    else:
+        header = "Tarea creada:"
     return DeterministicResult(
-        "Tarea creada:\n"
+        f"{header}\n"
         f"- Título: {payload['title']}\n"
         f"- Fecha: {payload['due_date']}\n"
         f"- Hora: {schedule}\n"
@@ -869,8 +902,13 @@ async def _handle_create_habit(text: str) -> DeterministicResult | None:
     assert payload is not None
     result = await create_habit(**payload)
     schedule = _format_time_window(payload.get("start_time"), payload.get("end_time"))
+    created_flag = _api_created_flag(result)
+    if created_flag is False:
+        header = f"⚠️ Ya existía: {payload['title']}"
+    else:
+        header = "Hábito creado:"
     return DeterministicResult(
-        "Hábito creado:\n"
+        f"{header}\n"
         f"- Título: {payload['title']}\n"
         f"- Inicio: {payload['start_date']}\n"
         f"- Frecuencia: {payload['frequency_type']}\n"
@@ -929,13 +967,17 @@ async def _handle_create_transaction(text: str) -> DeterministicResult | None:
     assert payload is not None
     result = await create_transaction(**payload)
     transaction_label = "Ingreso" if payload["transaction_type"] == "income" else "Gasto"
-    return DeterministicResult(
-        f"{transaction_label} registrado:\n"
-        f"- Descripción: {payload['description']}\n"
-        f"- Importe: {_format_amount(payload['amount'])}\n"
-        f"- Fecha: {payload['date']}\n"
-        f"- Respuesta Atlas: {_json_excerpt(result, max_len=220)}"
-    )
+    category = _extract_transaction_category(result)
+    lines = [
+        f"{transaction_label} registrado:",
+        f"- Descripción: {payload['description']}",
+        f"- Importe: {_format_amount(payload['amount'])}",
+        f"- Fecha: {payload['date']}",
+    ]
+    if category:
+        lines.append(f"- Categoría: {category}")
+    lines.append(f"- Respuesta Atlas: {_json_excerpt(result, max_len=220)}")
+    return DeterministicResult("\n".join(lines))
 
 
 async def try_handle_deterministic_message(text: str) -> DeterministicResult | None:

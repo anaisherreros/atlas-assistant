@@ -1,10 +1,36 @@
 from __future__ import annotations
 
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
 from .base import Agent
+
+_WEEKDAYS_ES = (
+    "lunes",
+    "martes",
+    "miércoles",
+    "jueves",
+    "viernes",
+    "sábado",
+    "domingo",
+)
+
+
+def _current_datetime_context_block() -> str:
+    now = datetime.now(ZoneInfo("Europe/Zurich"))
+    weekday = _WEEKDAYS_ES[now.weekday()]
+    return (
+        f"FECHA Y HORA ACTUAL (Europe/Zurich):\n"
+        f"- {weekday}, {now.strftime('%d/%m/%Y')} · {now.strftime('%H:%M')} {now.tzname() or 'CET/CEST'}\n\n"
+        "Cuando el usuario diga 'hoy', 'mañana', 'ayer', un día de la semana, "
+        "o no especifique fecha, calcula a partir de esta fecha. "
+        "Nunca preguntes la fecha si puede inferirse."
+    )
 
 
 def build_agent_system_prompt(agent: Agent) -> str:
     return (
+        f"{_current_datetime_context_block()}\n\n"
         f"{agent.system_prompt}\n\n"
         "Tienes acceso al servidor MCP de Atlas Vital con todas las herramientas necesarias "
         "para leer y modificar los datos de Anaïs.\n\n"

@@ -14,8 +14,6 @@ AGENTS: dict[str, Agent] = {
     "coach": coach.AGENT,
     "financial": financial.AGENT,
     "performance": performance.AGENT,
-    "nutritionist": performance.AGENT,
-    "trainer": performance.AGENT,
 }
 
 
