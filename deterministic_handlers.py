@@ -513,6 +513,23 @@ def _extract_expense_clause(text: str) -> str | None:
     return None
 
 
+def _extract_weight_clause(text: str) -> str | None:
+    clauses = re.split(r"\s+y\s+", text.strip(), flags=re.IGNORECASE)
+    weight_clauses = [clause.strip() for clause in clauses if _WEIGHT_INTENT_RE.search(clause)]
+    if not weight_clauses:
+        if _WEIGHT_INTENT_RE.search(text):
+            return text.strip()
+        return None
+    with_kg = [clause for clause in weight_clauses if extract_weight_kg_from_text(clause) is not None]
+    if len(with_kg) == 1:
+        return with_kg[0]
+    if len(with_kg) > 1:
+        return None
+    if len(weight_clauses) == 1:
+        return weight_clauses[0]
+    return text.strip()
+
+
 def _extract_expense_amount(text: str) -> tuple[float | None, tuple[int, int] | None]:
     for match in _CURRENCY_AMOUNT_RE.finditer(text):
         if _is_weight_number_match(match, text):
@@ -722,13 +739,7 @@ def _parse_log_weight(text: str) -> tuple[dict[str, Any] | None, str | None]:
     return {"date": tx_date, "weight_kg": weight_kg}, None
 
 
-async def _handle_log_weight(text: str) -> DeterministicResult | None:
-    payload, error = _parse_log_weight(text)
-    if error:
-        return DeterministicResult(error)
-    if payload is None:
-        return None
-
+async def _register_weight_line(payload: dict[str, Any]) -> tuple[str | None, str | None]:
     result = await register_weight_kg(
         date=str(payload["date"]),
         weight_kg=float(payload["weight_kg"]),
@@ -743,9 +754,91 @@ async def _handle_log_weight(text: str) -> DeterministicResult | None:
         physical = health.get("physical_log") if isinstance(health, dict) else None
         if isinstance(physical, dict) and physical.get("weight_kg") is not None:
             saved_weight = physical["weight_kg"]
-    return DeterministicResult(
-        f"✅ Peso registrado · {_format_kg(saved_weight)} kg · {payload['date']}"
+    return f"✅ Peso registrado · {_format_kg(saved_weight)} kg · {payload['date']}", None
+
+
+async def _register_transaction_line(payload: dict[str, Any]) -> tuple[str | None, str | None]:
+    working = dict(payload)
+    category_name = working.pop("category_name", None)
+    category_id, category_error = await resolve_finance_category_id(
+        category_name=category_name,
+        category_id=working.get("category_id"),
+        transaction_type=str(working["transaction_type"]),
     )
+    if category_error:
+        return None, category_error
+
+    result = await create_transaction(
+        description=str(working["description"]),
+        amount=float(working["amount"]),
+        transaction_type=str(working["transaction_type"]),
+        date=str(working["date"]),
+        category_id=category_id,
+    )
+    transaction_label = "Ingreso" if working["transaction_type"] == "income" else "Gasto"
+    category = _extract_transaction_category(result)
+    line = (
+        f"✅ {transaction_label}: {working['description']} · "
+        f"{_format_amount(float(working['amount']))} · {working['date']}"
+    )
+    if category:
+        line += f" · {category}"
+    return line, None
+
+
+async def _handle_log_weight(text: str) -> DeterministicResult | None:
+    payload, error = _parse_log_weight(text)
+    if error:
+        return DeterministicResult(error)
+    if payload is None:
+        return None
+
+    line, register_error = await _register_weight_line(payload)
+    if register_error:
+        return DeterministicResult(register_error)
+    return DeterministicResult(line or "", persist_conversation=True)
+
+
+async def _handle_compound_operational(text: str) -> DeterministicResult | None:
+    normalized = _normalize_text(text)
+    if not _is_compound_operational_message(normalized):
+        return None
+
+    intents = _operational_intent_keys(normalized)
+    lines: list[str] = []
+    any_success = False
+
+    if "weight" in intents:
+        weight_clause = _extract_weight_clause(text)
+        if weight_clause:
+            weight_payload, weight_error = _parse_log_weight(weight_clause)
+            if weight_error:
+                lines.append(f"❌ Peso: {weight_error}")
+            elif weight_payload:
+                line, register_error = await _register_weight_line(weight_payload)
+                if register_error:
+                    lines.append(f"❌ Peso: {register_error}")
+                elif line:
+                    lines.append(line)
+                    any_success = True
+
+    if "expense" in intents:
+        expense_clause = _extract_expense_clause(text)
+        if expense_clause:
+            tx_payload, tx_error = _parse_natural_transaction_clause(expense_clause)
+            if tx_error:
+                lines.append(f"❌ Gasto: {tx_error}")
+            elif tx_payload:
+                line, register_error = await _register_transaction_line(tx_payload)
+                if register_error:
+                    lines.append(f"❌ Gasto: {register_error}")
+                elif line:
+                    lines.append(line)
+                    any_success = True
+
+    if not lines:
+        return None
+    return DeterministicResult("\n".join(lines), persist_conversation=any_success)
 
 
 def _strip_command_prefix(text: str, patterns: tuple[str, ...]) -> str:
@@ -931,23 +1024,16 @@ def _parse_create_transaction(text: str) -> tuple[dict[str, Any] | None, str | N
     }, None
 
 
-def _parse_natural_transaction(text: str) -> tuple[dict[str, Any] | None, str | None]:
-    normalized = _normalize_text(text)
+def _parse_natural_transaction_clause(clause: str) -> tuple[dict[str, Any] | None, str | None]:
+    normalized = _normalize_text(clause)
     if not _EXPENSE_VERB_RE.search(normalized):
         return None, None
-    if _is_compound_operational_message(normalized):
-        return None, None
 
-    expense_clause = _extract_expense_clause(text)
-    if not expense_clause:
-        return None, None
-
-    clause_normalized = _normalize_text(expense_clause)
     transaction_type = "expense"
-    if re.search(r"\b(ingreso|cobre|cobr[eé]|recib[ií]|me\s+pagaron|me\s+entr[oó])\b", clause_normalized):
+    if re.search(r"\b(ingreso|cobre|cobr[eé]|recib[ií]|me\s+pagaron|me\s+entr[oó])\b", normalized):
         transaction_type = "income"
 
-    remainder = expense_clause.strip()
+    remainder = clause.strip()
     tx_date, date_span = _extract_date_token(remainder)
     if tx_date is None:
         tx_date = _today().isoformat()
@@ -1003,6 +1089,19 @@ def _parse_natural_transaction(text: str) -> tuple[dict[str, Any] | None, str | 
     if category_name:
         payload["category_name"] = category_name
     return payload, None
+
+
+def _parse_natural_transaction(text: str) -> tuple[dict[str, Any] | None, str | None]:
+    normalized = _normalize_text(text)
+    if not _EXPENSE_VERB_RE.search(normalized):
+        return None, None
+    if _is_compound_operational_message(normalized):
+        return None, None
+
+    expense_clause = _extract_expense_clause(text)
+    if not expense_clause:
+        return None, None
+    return _parse_natural_transaction_clause(expense_clause)
 
 
 async def _handle_help_query() -> DeterministicResult | None:
@@ -1226,34 +1325,10 @@ async def _handle_create_transaction(text: str) -> DeterministicResult | None:
     if payload is None:
         return None
 
-    category_name = payload.pop("category_name", None)
-    category_id, category_error = await resolve_finance_category_id(
-        category_name=category_name,
-        category_id=payload.get("category_id"),
-        transaction_type=str(payload["transaction_type"]),
-    )
-    if category_error:
-        return DeterministicResult(category_error)
-
-    result = await create_transaction(
-        description=str(payload["description"]),
-        amount=float(payload["amount"]),
-        transaction_type=str(payload["transaction_type"]),
-        date=str(payload["date"]),
-        category_id=category_id,
-    )
-    transaction_label = "Ingreso" if payload["transaction_type"] == "income" else "Gasto"
-    category = _extract_transaction_category(result)
-    lines = [
-        f"{transaction_label} registrado:",
-        f"- Descripción: {payload['description']}",
-        f"- Importe: {_format_amount(payload['amount'])}",
-        f"- Fecha: {payload['date']}",
-    ]
-    if category:
-        lines.append(f"- Categoría: {category}")
-    lines.append(f"- Respuesta Atlas: {_json_excerpt(result, max_len=220)}")
-    return DeterministicResult("\n".join(lines))
+    line, register_error = await _register_transaction_line(payload)
+    if register_error:
+        return DeterministicResult(register_error)
+    return DeterministicResult(line or "", persist_conversation=True)
 
 
 async def try_handle_deterministic_message(text: str) -> DeterministicResult | None:
@@ -1264,6 +1339,11 @@ async def try_handle_deterministic_message(text: str) -> DeterministicResult | N
     if _match_help_query(normalized):
         logger.info("Ruta determinista: help")
         return await _handle_help_query()
+    if _is_compound_operational_message(normalized):
+        logger.info("Ruta determinista: compound operational")
+        compound_result = await _handle_compound_operational(text)
+        if compound_result is not None:
+            return compound_result
     if _match_create_task(normalized):
         logger.info("Ruta determinista: create_task")
         return await _handle_create_task(text)
