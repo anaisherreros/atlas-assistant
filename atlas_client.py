@@ -6,6 +6,50 @@ from typing import Any
 import httpx
 
 
+class AtlasApiError(Exception):
+    def __init__(self, detail: str, status_code: int = 400, errors: dict[str, Any] | None = None):
+        self.detail = detail
+        self.status_code = status_code
+        self.errors = errors or {}
+        super().__init__(detail)
+
+
+def _api_error_detail(response: httpx.Response) -> str:
+    try:
+        body = response.json()
+    except Exception:
+        return f"Error HTTP {response.status_code} en {response.request.url.path}"
+
+    if not isinstance(body, dict):
+        return f"Error HTTP {response.status_code} en {response.request.url.path}"
+
+    detail = body.get("detail")
+    errors = body.get("errors")
+    if isinstance(detail, str) and detail.strip():
+        message = detail.strip()
+    else:
+        message = f"Error HTTP {response.status_code} en {response.request.url.path}"
+
+    if isinstance(errors, dict) and errors:
+        field_errors = "; ".join(f"{key}: {value}" for key, value in errors.items())
+        return f"{message} ({field_errors})"
+    return message
+
+
+def _raise_for_response(response: httpx.Response) -> None:
+    if response.is_success:
+        return
+    detail = _api_error_detail(response)
+    errors: dict[str, Any] | None = None
+    try:
+        body = response.json()
+        if isinstance(body, dict) and isinstance(body.get("errors"), dict):
+            errors = body["errors"]
+    except Exception:
+        pass
+    raise AtlasApiError(detail, response.status_code, errors)
+
+
 def _build_url(path: str) -> str:
     base_url = os.environ["ATLAS_VITAL_URL"].rstrip("/")
     return f"{base_url}{path}"
@@ -23,14 +67,14 @@ async def _get(path: str, params: dict[str, Any] | None = None) -> Any:
             headers=_auth_headers(),
             params=params or {},
         )
-        response.raise_for_status()
+        _raise_for_response(response)
         return response.json()
 
 
 async def _post(path: str, payload: dict[str, Any]) -> Any:
     async with httpx.AsyncClient(timeout=15.0) as client:
         response = await client.post(_build_url(path), headers=_auth_headers(), json=payload)
-        response.raise_for_status()
+        _raise_for_response(response)
         return response.json()
 
 

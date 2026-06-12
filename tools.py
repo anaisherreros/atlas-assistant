@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import json
+import re
+import unicodedata
+from datetime import datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from atlas_client import (
     _post,
@@ -44,6 +48,79 @@ from atlas_client import (
     update_relationship,
     update_task,
 )
+
+_ZURICH_TZ = ZoneInfo("Europe/Zurich")
+
+
+def _normalize_habit_text(value: str) -> str:
+    normalized = unicodedata.normalize("NFKD", value.lower())
+    return re.sub(r"\s+", " ", "".join(ch for ch in normalized if not unicodedata.combining(ch))).strip()
+
+
+def _normalize_habit_log_date(raw: Any) -> str:
+    if raw in (None, ""):
+        return datetime.now(_ZURICH_TZ).date().isoformat()
+    text = str(raw).strip()
+    lowered = text.lower()
+    if lowered in {"hoy", "today"}:
+        return datetime.now(_ZURICH_TZ).date().isoformat()
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
+        return text
+    match = re.fullmatch(r"(\d{1,2})/(\d{1,2})/(\d{4})", text)
+    if match:
+        day, month, year = match.groups()
+        return f"{year}-{int(month):02d}-{int(day):02d}"
+    return datetime.now(_ZURICH_TZ).date().isoformat()
+
+
+def _match_habit_by_title(habits: list[dict[str, Any]], title: str) -> dict[str, Any] | None:
+    normalized_title = _normalize_habit_text(title)
+    if not normalized_title:
+        return None
+    exact = [habit for habit in habits if _normalize_habit_text(str(habit.get("title") or "")) == normalized_title]
+    if len(exact) == 1:
+        return exact[0]
+    partial = [
+        habit
+        for habit in habits
+        if normalized_title in _normalize_habit_text(str(habit.get("title") or ""))
+        or _normalize_habit_text(str(habit.get("title") or "")) in normalized_title
+    ]
+    if len(partial) == 1:
+        return partial[0]
+    return None
+
+
+async def _resolve_habit_for_log(args: dict[str, Any]) -> int:
+    payload = await get_today()
+    habits = payload.get("habits") if isinstance(payload, dict) else None
+    if not isinstance(habits, list) or not habits:
+        raise ValueError("No hay hábitos activos hoy en Atlas Vital.")
+
+    habit_title = str(args.get("habit_title") or args.get("title") or "").strip()
+    if habit_title:
+        matched = _match_habit_by_title(habits, habit_title)
+        if matched and matched.get("id") is not None:
+            return int(matched["id"])
+        options = ", ".join(f"[{habit.get('id')}] {habit.get('title')}" for habit in habits[:8])
+        raise ValueError(f"No encontré el hábito '{habit_title}'. Hoy: {options}")
+
+    raw_id = args.get("habit_id")
+    if raw_id is None:
+        options = ", ".join(f"[{habit.get('id')}] {habit.get('title')}" for habit in habits[:8])
+        raise ValueError(f"Falta habit_id o habit_title. Hábitos de hoy: {options}")
+
+    try:
+        habit_id = int(raw_id)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"habit_id inválido: {raw_id!r}") from exc
+
+    for habit in habits:
+        if habit.get("id") == habit_id:
+            return habit_id
+
+    options = ", ".join(f"[{habit.get('id')}] {habit.get('title')}" for habit in habits[:8])
+    raise ValueError(f"habit_id {habit_id} no corresponde a un hábito de hoy. Disponibles: {options}")
 
 
 def _tool(
@@ -239,14 +316,15 @@ ATLAS_TOOLS: list[dict[str, Any]] = [
     ),
     _tool(
         "log_habit_completion",
-        "Marca progreso de un hábito en una fecha.",
+        "Marca progreso de un hábito. Llama get_today antes si no tienes el ID exacto, o pasa habit_title.",
         {
-            "habit_id": {"type": "integer"},
-            "date": {"type": "string"},
+            "habit_id": {"type": "integer", "description": "ID exacto de get_today → habits[].id"},
+            "habit_title": {"type": "string", "description": "Nombre del hábito si no conoces el ID"},
+            "date": {"type": "string", "description": "YYYY-MM-DD; omitir o 'hoy' = fecha actual (Zurich)"},
             "completed": {"type": "boolean"},
             "note": {"type": "string"},
         },
-        ["habit_id", "date", "completed"],
+        ["completed"],
     ),
     _tool(
         "create_task",
@@ -509,10 +587,11 @@ async def dispatch_atlas_tool(name: str, raw: dict[str, Any]) -> Any:
     if name == "delete_habit":
         return await delete_habit(int(args["habit_id"]))
     if name == "log_habit_completion":
+        habit_id = await _resolve_habit_for_log(args)
         return await log_habit(
-            habit_id=int(args["habit_id"]),
-            date=args["date"],
-            completed=bool(args["completed"]),
+            habit_id=habit_id,
+            date=_normalize_habit_log_date(args.get("date")),
+            completed=bool(args.get("completed", True)),
             note=args.get("note", ""),
         )
 

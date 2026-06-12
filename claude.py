@@ -9,6 +9,7 @@ from typing import Any
 
 from anthropic import AsyncAnthropic
 
+from atlas_client import AtlasApiError
 from tools import ATLAS_TOOLS, dispatch_atlas_tool
 
 logger = logging.getLogger(__name__)
@@ -251,8 +252,27 @@ def _text_redundant_with_confirmations(text: str, confirmations: list[str]) -> b
     return False
 
 
+def _exception_message(exc: Exception) -> str:
+    if isinstance(exc, AtlasApiError):
+        return exc.detail
+    return str(exc)
+
+
+def _dedupe_lines(lines: list[str]) -> list[str]:
+    seen: set[str] = set()
+    unique: list[str] = []
+    for line in lines:
+        if line in seen:
+            continue
+        seen.add(line)
+        unique.append(line)
+    return unique
+
+
 def _finalize_user_message(model_text: str, write_outcomes: list[_WriteToolOutcome]) -> str:
-    confirmations = [_build_write_confirmation(outcome) for outcome in write_outcomes]
+    confirmations = _dedupe_lines(
+        [_build_write_confirmation(outcome) for outcome in write_outcomes]
+    )
     confirmations = [line for line in confirmations if line]
     text = (model_text or "").strip()
 
@@ -427,7 +447,7 @@ async def generate_with_tools(
                             tool_input=tool_input,
                             result=None,
                             is_error=True,
-                            error_message=str(exc),
+                            error_message=_exception_message(exc),
                         )
                     )
                 tool_result_blocks.append(
