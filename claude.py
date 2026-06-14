@@ -26,6 +26,7 @@ WRITE_TOOLS = frozenset({
     "complete_task",
     "log_self_relationship",
     "log_relationship",
+    "create_journal_entry",
     "apply_day_template",
     "remove_day_template",
 })
@@ -154,6 +155,7 @@ def _build_write_confirmation(outcome: _WriteToolOutcome) -> str:
         "complete_task": ("completar la tarea", "tarea"),
         "log_self_relationship": ("registrar reflexión personal", "reflexión"),
         "log_relationship": ("registrar la interacción", "interacción"),
+        "create_journal_entry": ("guardar en el diario", "entrada de diario"),
         "apply_day_template": ("aplicar la plantilla", "plantilla"),
         "remove_day_template": ("quitar la plantilla", "plantilla"),
     }
@@ -256,6 +258,14 @@ def _build_write_confirmation(outcome: _WriteToolOutcome) -> str:
         date_label = _format_date_label(log.get("date") or inp.get("date"))
         feeling = inp.get("self_feeling") or "reflexión"
         return f"✅ Reflexión personal registrada · {feeling} · {date_label}"
+
+    if name == "create_journal_entry":
+        entry = payload.get("journal_entry") if isinstance(payload.get("journal_entry"), dict) else {}
+        date_label = _format_date_label(entry.get("date") or inp.get("date"))
+        preview = (entry.get("body") or inp.get("body") or "").strip().replace("\n", " ")
+        if len(preview) > 60:
+            preview = preview[:57] + "…"
+        return f"✅ Diario · {date_label}" + (f" · «{preview}»" if preview else "")
 
     if name == "apply_day_template":
         applied = payload.get("applied_template") if isinstance(payload.get("applied_template"), dict) else {}

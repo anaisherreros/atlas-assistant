@@ -344,6 +344,37 @@ async def create_daily_review(
     return await _post("/api/assistant/reviews/daily/create/", payload)
 
 
+async def create_journal_entry(
+    body: str,
+    date: str = "",
+    mood_tag: str = "",
+    agent_key: str = "",
+    source: str = "agent",
+) -> Any:
+    payload: dict[str, Any] = {
+        "body": body,
+        "source": source,
+    }
+    if date:
+        payload["date"] = date
+    if mood_tag:
+        payload["mood_tag"] = mood_tag
+    if agent_key:
+        payload["agent_key"] = agent_key
+    return await _post("/api/assistant/journal/create/", payload)
+
+
+async def list_journal_entries(date: str = "", limit: int = 20) -> Any:
+    params: dict[str, Any] = {"limit": limit}
+    if date:
+        params["date"] = date
+    return await _get("/api/assistant/journal/list/", params)
+
+
+async def list_journal_latest(limit: int = 10) -> Any:
+    return await _get("/api/assistant/journal/latest/", {"limit": limit})
+
+
 async def create_weekly_review(
     week_start: str,
     week_end: str,

@@ -14,6 +14,7 @@ from atlas_client import (
     apply_day_template,
     complete_task,
     create_daily_review,
+    create_journal_entry,
     create_body_measurement,
     create_desire,
     create_goal,
@@ -43,6 +44,8 @@ from atlas_client import (
     get_tasks_pending,
     get_today,
     list_day_templates,
+    list_journal_entries,
+    list_journal_latest,
     log_exercise,
     log_health,
     log_habit,
@@ -600,6 +603,37 @@ ATLAS_TOOLS: list[dict[str, Any]] = [
         ["date", "self_feeling"],
     ),
     _tool(
+        "create_journal_entry",
+        "Guarda entrada de diario (texto libre: emociones, reflexiones, relato del día). "
+        "Úsala cuando haya contenido narrativo o emocional, también en mensajes mixtos.",
+        {
+            "body": {"type": "string", "description": "Texto fiel de lo que dijo la usuaria"},
+            "date": {"type": "string", "description": "YYYY-MM-DD; omitir = hoy"},
+            "mood_tag": {
+                "type": "string",
+                "description": "Opcional: very_low, low, neutral, good, great",
+            },
+            "agent_key": {"type": "string", "description": "Opcional: personal, coach, etc."},
+            "source": {"type": "string", "description": "Por defecto agent"},
+        },
+        ["body"],
+    ),
+    _tool(
+        "list_journal_entries",
+        "Lista entradas de diario de una fecha.",
+        {
+            "date": {"type": "string", "description": "YYYY-MM-DD; omitir = hoy"},
+            "limit": {"type": "integer"},
+        },
+        [],
+    ),
+    _tool(
+        "list_journal_latest",
+        "Lista las entradas de diario más recientes.",
+        {"limit": {"type": "integer"}},
+        [],
+    ),
+    _tool(
         "create_daily_review",
         "Crea revisión diaria.",
         {
@@ -852,6 +886,27 @@ async def dispatch_atlas_tool(name: str, raw: dict[str, Any]) -> Any:
             things_i_like=things,
             working_on=args.get("working_on", ""),
         )
+
+    if name == "create_journal_entry":
+        body = (args.get("body") or "").strip()
+        if not body:
+            raise ValueError("body es obligatorio para create_journal_entry.")
+        log_date = _normalize_habit_log_date(args.get("date"))
+        return await create_journal_entry(
+            body=body,
+            date=log_date,
+            mood_tag=str(args.get("mood_tag") or ""),
+            agent_key=str(args.get("agent_key") or ""),
+            source=str(args.get("source") or "agent"),
+        )
+    if name == "list_journal_entries":
+        raw_date = args.get("date")
+        log_date = _normalize_habit_log_date(raw_date) if raw_date not in (None, "") else ""
+        limit = int(args.get("limit") or 20)
+        return await list_journal_entries(date=log_date, limit=limit)
+    if name == "list_journal_latest":
+        limit = int(args.get("limit") or 10)
+        return await list_journal_latest(limit=limit)
 
     if name == "create_daily_review":
         return await create_daily_review(
