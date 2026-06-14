@@ -375,6 +375,8 @@ ATLAS_TOOLS: list[dict[str, Any]] = [
                 "enum": ["daily", "weekly", "monthly"],
             },
             "goal_id": {"type": "integer", "description": "Opcional"},
+            "area_id": {"type": "integer", "description": "Opcional; sin objetivo"},
+            "subarea_id": {"type": "integer", "description": "Opcional; ej. Mental"},
             "times_per_period": {"type": "integer"},
             "weekdays": {
                 "type": "array",
@@ -427,7 +429,9 @@ ATLAS_TOOLS: list[dict[str, Any]] = [
             "description": {"type": "string"},
             "start_time": {"type": "string", "description": "HH:MM"},
             "end_time": {"type": "string", "description": "HH:MM"},
-            "goal_id": {"type": "integer"},
+            "goal_id": {"type": "integer", "description": "Opcional"},
+            "area_id": {"type": "integer", "description": "Opcional; sin objetivo, para color/área"},
+            "subarea_id": {"type": "integer", "description": "Opcional; ej. Mental, Conmigo misma"},
         },
         ["title", "due_date"],
     ),
@@ -780,6 +784,10 @@ async def dispatch_atlas_tool(name: str, raw: dict[str, Any]) -> Any:
             extra["start_time"] = args["start_time"]
         if args.get("end_time") is not None:
             extra["end_time"] = args["end_time"]
+        if args.get("area_id") is not None:
+            extra["area_id"] = args["area_id"]
+        if args.get("subarea_id") is not None:
+            extra["subarea_id"] = args["subarea_id"]
         return await create_habit(
             title=args["title"],
             start_date=args["start_date"],
@@ -810,6 +818,8 @@ async def dispatch_atlas_tool(name: str, raw: dict[str, Any]) -> Any:
             start_time=args.get("start_time"),
             end_time=args.get("end_time"),
             goal_id=args.get("goal_id"),
+            area_id=args.get("area_id"),
+            subarea_id=args.get("subarea_id"),
         )
     if name == "update_task":
         tid = int(args.pop("task_id"))

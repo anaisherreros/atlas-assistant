@@ -162,6 +162,8 @@ async def create_task(
     start_time: str | None = None,
     end_time: str | None = None,
     goal_id: int | None = None,
+    area_id: int | None = None,
+    subarea_id: int | None = None,
 ) -> Any:
     payload: dict[str, Any] = {
         "title": title,
@@ -175,6 +177,10 @@ async def create_task(
         payload["end_time"] = end_time
     if goal_id is not None:
         payload["goal_id"] = goal_id
+    if area_id is not None:
+        payload["area_id"] = area_id
+    if subarea_id is not None:
+        payload["subarea_id"] = subarea_id
     return await _post("/api/assistant/tasks/create/", payload)
 
 
