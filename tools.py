@@ -15,6 +15,7 @@ from atlas_client import (
     complete_task,
     create_daily_review,
     create_journal_entry,
+    create_meal_log,
     create_body_measurement,
     create_desire,
     create_goal,
@@ -46,6 +47,8 @@ from atlas_client import (
     list_day_templates,
     list_journal_entries,
     list_journal_latest,
+    list_meal_logs,
+    list_meal_latest,
     log_exercise,
     log_health,
     log_habit,
@@ -634,6 +637,35 @@ ATLAS_TOOLS: list[dict[str, Any]] = [
         [],
     ),
     _tool(
+        "log_meal",
+        "Registra qué comió (texto libre). Distinto de create_transaction (gasto). "
+        "Úsala cuando describa comida: desayuno, comida, cena, snack.",
+        {
+            "body": {"type": "string", "description": "Qué comió, fiel al mensaje"},
+            "date": {"type": "string", "description": "YYYY-MM-DD; omitir = hoy"},
+            "meal_slot": {
+                "type": "string",
+                "description": "Opcional: breakfast, lunch, dinner, snack",
+            },
+        },
+        ["body"],
+    ),
+    _tool(
+        "list_meal_logs",
+        "Lista registros de comida de una fecha.",
+        {
+            "date": {"type": "string", "description": "YYYY-MM-DD; omitir = hoy"},
+            "limit": {"type": "integer"},
+        },
+        [],
+    ),
+    _tool(
+        "list_meal_latest",
+        "Lista los registros de comida más recientes.",
+        {"limit": {"type": "integer"}},
+        [],
+    ),
+    _tool(
         "create_daily_review",
         "Crea revisión diaria.",
         {
@@ -907,6 +939,25 @@ async def dispatch_atlas_tool(name: str, raw: dict[str, Any]) -> Any:
     if name == "list_journal_latest":
         limit = int(args.get("limit") or 10)
         return await list_journal_latest(limit=limit)
+
+    if name == "log_meal":
+        body = (args.get("body") or "").strip()
+        if not body:
+            raise ValueError("body es obligatorio para log_meal.")
+        log_date = _normalize_habit_log_date(args.get("date"))
+        return await create_meal_log(
+            body=body,
+            date=log_date,
+            meal_slot=str(args.get("meal_slot") or ""),
+        )
+    if name == "list_meal_logs":
+        raw_date = args.get("date")
+        log_date = _normalize_habit_log_date(raw_date) if raw_date not in (None, "") else ""
+        limit = int(args.get("limit") or 20)
+        return await list_meal_logs(date=log_date, limit=limit)
+    if name == "list_meal_latest":
+        limit = int(args.get("limit") or 10)
+        return await list_meal_latest(limit=limit)
 
     if name == "create_daily_review":
         return await create_daily_review(

@@ -375,6 +375,34 @@ async def list_journal_latest(limit: int = 10) -> Any:
     return await _get("/api/assistant/journal/latest/", {"limit": limit})
 
 
+async def create_meal_log(
+    body: str,
+    date: str = "",
+    meal_slot: str = "",
+    source: str = "agent",
+) -> Any:
+    payload: dict[str, Any] = {
+        "body": body,
+        "source": source,
+    }
+    if date:
+        payload["date"] = date
+    if meal_slot:
+        payload["meal_slot"] = meal_slot
+    return await _post("/api/assistant/meal/create/", payload)
+
+
+async def list_meal_logs(date: str = "", limit: int = 20) -> Any:
+    params: dict[str, Any] = {"limit": limit}
+    if date:
+        params["date"] = date
+    return await _get("/api/assistant/meal/list/", params)
+
+
+async def list_meal_latest(limit: int = 10) -> Any:
+    return await _get("/api/assistant/meal/latest/", {"limit": limit})
+
+
 async def create_weekly_review(
     week_start: str,
     week_end: str,

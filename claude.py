@@ -27,6 +27,7 @@ WRITE_TOOLS = frozenset({
     "log_self_relationship",
     "log_relationship",
     "create_journal_entry",
+    "log_meal",
     "apply_day_template",
     "remove_day_template",
 })
@@ -156,6 +157,7 @@ def _build_write_confirmation(outcome: _WriteToolOutcome) -> str:
         "log_self_relationship": ("registrar reflexión personal", "reflexión"),
         "log_relationship": ("registrar la interacción", "interacción"),
         "create_journal_entry": ("guardar en el diario", "entrada de diario"),
+        "log_meal": ("registrar la comida", "comida"),
         "apply_day_template": ("aplicar la plantilla", "plantilla"),
         "remove_day_template": ("quitar la plantilla", "plantilla"),
     }
@@ -266,6 +268,22 @@ def _build_write_confirmation(outcome: _WriteToolOutcome) -> str:
         if len(preview) > 60:
             preview = preview[:57] + "…"
         return f"✅ Diario · {date_label}" + (f" · «{preview}»" if preview else "")
+
+    if name == "log_meal":
+        log = payload.get("meal_log") if isinstance(payload.get("meal_log"), dict) else {}
+        date_label = _format_date_label(log.get("date") or inp.get("date"))
+        preview = (log.get("body") or inp.get("body") or "").strip().replace("\n", " ")
+        if len(preview) > 60:
+            preview = preview[:57] + "…"
+        slot = log.get("meal_slot") or inp.get("meal_slot") or ""
+        slot_labels = {
+            "breakfast": "desayuno",
+            "lunch": "comida",
+            "dinner": "cena",
+            "snack": "snack",
+        }
+        slot_txt = f" · {slot_labels[slot]}" if slot in slot_labels else ""
+        return f"✅ Comida · {date_label}{slot_txt}" + (f" · «{preview}»" if preview else "")
 
     if name == "apply_day_template":
         applied = payload.get("applied_template") if isinstance(payload.get("applied_template"), dict) else {}
